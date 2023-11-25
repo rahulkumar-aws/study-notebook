@@ -1,27 +1,28 @@
 [greenemath](https://greenemath.com/Prealgebra.html)
-- 00:00:00 #1 Place Value 
-- 00:16:53 #2 Expanded Notation 
-- 00:32:58 #3 Inequalities and the Number Line 
-- 00:44:07 #4 Rounding Whole Numbers 
+[back](README.md)
+- 00:00:00 #1 Place Value
+- 00:16:53 #2 Expanded Notation
+- 00:32:58 #3 Inequalities and the Number Line
+- 00:44:07 #4 Rounding Whole Numbers
 - 00:49:26 #5 Properties of Addition
-- 00:57:43 #6 Number Line Addition 
-- 01:05:20 #7 Vertical Addition 
-- 01:21:35 #8 Number Line Subtraction 
+- 00:57:43 #6 Number Line Addition
+- 01:05:20 #7 Vertical Addition
+- 01:21:35 #8 Number Line Subtraction
 - 01:31:37 #9 Vertical Subtraction
 - 01:48:48 #10 Properties of Multiplication
-- 02:10:11 #11 Vertical Multiplication 
-- 02:34:24 #12 Multiplication with Trailing Zeros 
-- 02:43:24 #13 Properties of Division 
-- 03:06:42 #14 Long Division 
+- 02:10:11 #11 Vertical Multiplication
+- 02:34:24 #12 Multiplication with Trailing Zeros
+- 02:43:24 #13 Properties of Division
+- 03:06:42 #14 Long Division
 - 03:46:53 #15 Introduction to Exponents
-- 04:02:52 #16 Order of Operations with Whole Numbers 
+- 04:02:52 #16 Order of Operations with Whole Numbers
 - 04:17:08 #17 Introduction to Integers
-- 04:39:15 #18 Absolute Value 
-- 04:52:21 #19 Adding Integers 
-- 05:14:51 #20 Subtracting Integers 
-- 05:34:25 #21 Multiplying and Dividing Integers 
-- 05:52:29 #22 Exponents with a Negative Base 
-- 06:07:08 #23 Order of Operations with Integers 
+- 04:39:15 #18 Absolute Value
+- 04:52:21 #19 Adding Integers
+- 05:14:51 #20 Subtracting Integers
+- 05:34:25 #21 Multiplying and Dividing Integers
+- 05:52:29 #22 Exponents with a Negative Base
+- 06:07:08 #23 Order of Operations with Integers
 - 06:47:50 #24 Divisibility Rules 2-12
 - 07:12:10 #25 Factoring Whole Numbers
 - 07:41:42 #26 Introduction to Fractions
