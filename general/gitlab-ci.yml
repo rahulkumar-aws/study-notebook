@@ -1,0 +1,51 @@
+stages:
+  - install
+  - build
+  - test
+  - upload
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"  # Cache for Poetry dependencies
+
+cache:
+  paths:
+    - .cache/pip
+    - .venv
+
+install_dependencies:
+  stage: install
+  image: python:3.9  # Use Python Docker image
+  before_script:
+    - curl -sSL https://install.python-poetry.org | python3 -  # Install Poetry
+    - export PATH="$HOME/.local/bin:$PATH"
+    - poetry install  # Install project dependencies
+  script:
+    - poetry install  # Install all dependencies
+
+build_package:
+  stage: build
+  image: python:3.9
+  script:
+    - poetry build  # Build the package
+  artifacts:
+    paths:
+      - dist/*.whl
+      - dist/*.tar.gz
+    expire_in: 1 week  # Set expiration for build artifacts
+
+test_package:
+  stage: test
+  image: python:3.9
+  script:
+    - poetry run pytest  # Run tests using pytest
+
+upload_package:
+  stage: upload
+  image: python:3.9
+  before_script:
+    - pip install twine  # Install twine for uploading the package
+  script:
+    - poetry build  # Build the package if not already built
+    - twine upload dist/*  # Upload to PyPI or JFrog repository
+  only:
+    - main  # Only run on the main branch
