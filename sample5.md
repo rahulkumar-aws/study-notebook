@@ -1,14 +1,14 @@
-To run this code in a **Databricks environment** and make it more reusable as a Python script, we can wrap the functionality into a **main function** and structure it in a way that it can be executed independently, either as part of a Databricks job or from the command line.
+The error you're encountering indicates that no **MLflow experiment** has been set, and thus **MLflow** does not know where to log your runs. You can resolve this by specifying an experiment where the MLflow runs should be recorded.
 
-We can create a Python script that:
-1. Reads data from the **Databricks Feature Store**.
-2. Handles missing data and preprocesses the features.
-3. Trains a **Random Forest Classifier**.
-4. Logs the model and metrics to **MLflow**.
+Here’s how you can fix this issue:
 
-Here’s how you can structure the code, including a **main function** and proper script structure.
+### Fix: Set an MLflow Experiment
 
-### Full Python Script (With `main()` Function):
+At the start of your program, use `mlflow.set_experiment()` to either:
+1. **Create a new experiment**, or
+2. **Use an existing experiment** by specifying its name.
+
+### Updated Code:
 
 ```python
 import pandas as pd
@@ -23,14 +23,17 @@ import databricks.feature_store as feature_store
 
 # Main function for training and logging the model
 def main():
-    # Step 1: Load data from Databricks Feature Store
+    # Step 1: Set the MLflow experiment (create or use an existing experiment)
+    mlflow.set_experiment("random_forest_experiment")  # Replace with your experiment name
+    
+    # Step 2: Load data from Databricks Feature Store
     fs = feature_store.FeatureStoreClient()
     final_features_df = fs.read_table(name="acia_hackathon_2024.actuarydb_wizards.client_a_features")
 
     # Convert PySpark DataFrame to pandas DataFrame
     df = final_features_df.toPandas()
 
-    # Step 2: Data preprocessing
+    # Step 3: Data preprocessing
     # Encode categorical columns with LabelEncoder
     label_encoder = LabelEncoder()
 
@@ -45,7 +48,7 @@ def main():
     ]
     target_column = 'total_lost_work_days'
 
-    # Step 3: Handle missing values in features and target
+    # Step 4: Handle missing values in features and target
     # Remove rows where the target variable (y) is NaN
     df = df.dropna(subset=[target_column])
 
@@ -59,17 +62,17 @@ def main():
     # Impute missing values in the features
     X_imputed = imputer.fit_transform(X)
 
-    # Step 4: Train-test split
+    # Step 5: Train-test split
     X_train, X_test, y_train, y_test = train_test_split(X_imputed, y, test_size=0.3, random_state=42)
 
-    # Step 5: Train a Random Forest Classifier
+    # Step 6: Train a Random Forest Classifier
     rf_clf = RandomForestClassifier(n_estimators=100, random_state=42)
     rf_clf.fit(X_train, y_train)
 
     # Make predictions
     y_pred = rf_clf.predict(X_test)
 
-    # Step 6: Log model and metrics to MLflow
+    # Step 7: Log model and metrics to MLflow
     with mlflow.start_run():
         # Log the model to MLflow
         mlflow.sklearn.log_model(rf_clf, "random_forest_model")
@@ -98,47 +101,23 @@ if __name__ == "__main__":
     main()
 ```
 
-### Explanation of the Script:
+### Explanation:
+1. **Setting the Experiment**: 
+   - The line `mlflow.set_experiment("random_forest_experiment")` tells MLflow to log the runs under the experiment named **"random_forest_experiment"**.
+   - If the experiment doesn’t exist, MLflow will create it automatically. If it exists, the run will be added to that experiment.
 
-1. **Main Function (`main()`)**:
-   - The entire pipeline is wrapped in a function `main()`, which includes all steps like loading data, preprocessing, training the model, and logging results to MLflow.
+2. **Logging to MLflow**:
+   - All runs, metrics, and models will be logged under the specified experiment.
 
-2. **Data Loading**:
-   - The data is loaded from the **Databricks Feature Store** using the `FeatureStoreClient()` and converted to a pandas DataFrame for use with scikit-learn.
+### How to Run:
+1. **Install dependencies**:
+   ```python
+   %pip install scikit-learn mlflow
+   ```
 
-3. **Preprocessing**:
-   - Categorical columns (`Leave_Type`, `performance_score`) are encoded using `LabelEncoder`.
-   - Missing values in the feature columns are imputed using `SimpleImputer` with the **mean** strategy.
-   - Any missing values in the target column are removed using `dropna()`.
+2. **Run the script** in Databricks.
 
-4. **Model Training**:
-   - A **RandomForestClassifier** is trained on the imputed dataset using scikit-learn.
+3. **Check MLflow**: 
+   - After running the script, you can navigate to the **MLflow UI** in Databricks to view the models, metrics, and runs under the specified experiment.
 
-5. **MLflow Logging**:
-   - The trained model and its metrics (accuracy, precision, recall) are logged to **MLflow** for versioning and tracking.
-
-6. **Script Entry Point**:
-   - The script uses `if __name__ == "__main__": main()` to ensure that the `main()` function runs when the script is executed.
-
-### How to Run This Python Script in Databricks:
-
-#### 1. **Create a Python Script File**:
-   - Create a Python file in Databricks, e.g., `train_random_forest.py`.
-   - Copy and paste the above code into the file.
-
-#### 2. **Configure Databricks Assets**:
-   - Ensure that **scikit-learn** and **MLflow** are installed in your Databricks environment. If not, you can install them by running:
-     ```python
-     %pip install scikit-learn mlflow
-     ```
-
-#### 3. **Run the Python Script**:
-   - You can run the Python script as part of a Databricks Job or directly in a Databricks notebook by using `%run <path_to_your_script>`.
-
-#### 4. **Check MLflow UI**:
-   - After running the script, navigate to the **MLflow UI** in Databricks to view the model, metrics, and logged parameters.
-
-### To Create Databricks Asset Bundles:
-- You can create asset bundles in Databricks for packaging this script, the model, and any dependencies as part of a job.
-
-Let me know if you need help with additional configurations or specific steps!
+Let me know if this solves the issue, and feel free to ask if you need more help!
