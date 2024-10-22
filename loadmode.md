@@ -113,7 +113,49 @@ def load_and_use_model():
 if __name__ == "__main__":
     load_and_use_model()
 ```
+```
+import mlflow
+import pandas as pd
+import databricks.feature_store as feature_store
 
+# Function to load the model from the registry and make predictions on data from Feature Store
+def load_and_use_model():
+    # Step 1: Load the Random Forest model from the Databricks Model Registry
+    model_name = "my_random_forest_model"
+    model_version = "latest"  # Or specify the version number, e.g., "1"
+    
+    # Load the model from the registry
+    model = mlflow.pyfunc.load_model(f"models:/{model_name}/{model_version}")
+    
+    # Step 2: Access the Databricks Feature Store
+    fs = feature_store.FeatureStoreClient()
+
+    # Load the data from Feature Store
+    # Adjust the table name as per your setup in the Feature Store
+    feature_table = "acia_hackathon_2024.actuarydb_wizards.client_a_features"
+    final_features_df = fs.read_table(name=feature_table)
+
+    # Convert PySpark DataFrame to pandas DataFrame
+    df = final_features_df.toPandas()
+
+    # Define the feature columns (these should match the features the model expects)
+    feature_columns = [
+        'Leave_Type', 'Unique_Member_Count', 'LTD_Claim_Counter', 'WC_any_Claim_Counter', 'STD_Claim_Counter',
+        'tenure', 'final_AnnualSalary', 'CHRON_ALLERGIES_IND', 'CHRON_ARTHRITIS_IND', 'CHRON_ASTHMA_IND', 'total_medical_cost'
+    ]
+    
+    # Extract the feature data from the DataFrame
+    X_test = df[feature_columns]
+
+    # Step 3: Make predictions using the loaded model
+    predictions = model.predict(X_test)
+
+    # Output the predictions
+    print("Predictions:", predictions)
+
+if __name__ == "__main__":
+    load_and_use_model()
+```
 #### Explanation:
 1. **Model Loading**: The model is loaded from the **Databricks Model Registry** using `mlflow.pyfunc.load_model()`.
    - You can load the **latest version** or a specific version (e.g., version `"1"`).
