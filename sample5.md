@@ -1,3 +1,16 @@
+To run this code in a **Databricks environment** and make it more reusable as a Python script, we can wrap the functionality into a **main function** and structure it in a way that it can be executed independently, either as part of a Databricks job or from the command line.
+
+We can create a Python script that:
+1. Reads data from the **Databricks Feature Store**.
+2. Handles missing data and preprocesses the features.
+3. Trains a **Random Forest Classifier**.
+4. Logs the model and metrics to **MLflow**.
+
+Here’s how you can structure the code, including a **main function** and proper script structure.
+
+### Full Python Script (With `main()` Function):
+
+```python
 import pandas as pd
 import mlflow
 import mlflow.sklearn
@@ -83,3 +96,49 @@ def main():
 # Entry point for script execution
 if __name__ == "__main__":
     main()
+```
+
+### Explanation of the Script:
+
+1. **Main Function (`main()`)**:
+   - The entire pipeline is wrapped in a function `main()`, which includes all steps like loading data, preprocessing, training the model, and logging results to MLflow.
+
+2. **Data Loading**:
+   - The data is loaded from the **Databricks Feature Store** using the `FeatureStoreClient()` and converted to a pandas DataFrame for use with scikit-learn.
+
+3. **Preprocessing**:
+   - Categorical columns (`Leave_Type`, `performance_score`) are encoded using `LabelEncoder`.
+   - Missing values in the feature columns are imputed using `SimpleImputer` with the **mean** strategy.
+   - Any missing values in the target column are removed using `dropna()`.
+
+4. **Model Training**:
+   - A **RandomForestClassifier** is trained on the imputed dataset using scikit-learn.
+
+5. **MLflow Logging**:
+   - The trained model and its metrics (accuracy, precision, recall) are logged to **MLflow** for versioning and tracking.
+
+6. **Script Entry Point**:
+   - The script uses `if __name__ == "__main__": main()` to ensure that the `main()` function runs when the script is executed.
+
+### How to Run This Python Script in Databricks:
+
+#### 1. **Create a Python Script File**:
+   - Create a Python file in Databricks, e.g., `train_random_forest.py`.
+   - Copy and paste the above code into the file.
+
+#### 2. **Configure Databricks Assets**:
+   - Ensure that **scikit-learn** and **MLflow** are installed in your Databricks environment. If not, you can install them by running:
+     ```python
+     %pip install scikit-learn mlflow
+     ```
+
+#### 3. **Run the Python Script**:
+   - You can run the Python script as part of a Databricks Job or directly in a Databricks notebook by using `%run <path_to_your_script>`.
+
+#### 4. **Check MLflow UI**:
+   - After running the script, navigate to the **MLflow UI** in Databricks to view the model, metrics, and logged parameters.
+
+### To Create Databricks Asset Bundles:
+- You can create asset bundles in Databricks for packaging this script, the model, and any dependencies as part of a job.
+
+Let me know if you need help with additional configurations or specific steps!
