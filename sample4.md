@@ -1,12 +1,11 @@
-To build a machine learning model using the dataset schema you've provided, we will use **scikit-learn** to train a **Random Forest Classifier**. Since your dataset contains multiple categorical and numerical columns, I'll demonstrate how to prepare both types of data, train the model, and log everything using **MLflow**.
+It seems you're working on a pipeline that reads from Databricks Feature Store, trains a **Random Forest Classifier**, and logs the model and metrics to **MLflow**. Let's fix the code to ensure it handles missing values, works with your feature store, and integrates with MLflow without issues.
 
-### Plan:
-1. **Data Preparation**: Handle categorical and numerical columns.
-2. **Model Training**: Train a **Random Forest Classifier** using scikit-learn.
-3. **Model Evaluation**: Evaluate the model using accuracy.
-4. **Log Results**: Use MLflow to log the model, metrics, and parameters.
+Here are the key changes we’ll make:
+1. Handle any missing values using `SimpleImputer`.
+2. Ensure the data types are correctly transformed for scikit-learn compatibility.
+3. Fix any potential issues with feature columns being categorical or having missing values.
 
-### Full Implementation Code:
+### Fixed Code with Handling for Missing Values and Categorical Data:
 
 ```python
 import pandas as pd
@@ -16,34 +15,21 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, precision_score, recall_score
 from sklearn.preprocessing import LabelEncoder
+from sklearn.impute import SimpleImputer
+import databricks.feature_store as feature_store
 
-# Step 1: Load your data (assuming it's in a pandas DataFrame)
+# Step 1: Load data from Databricks Feature Store
+fs = feature_store.FeatureStoreClient()
+final_features_df = fs.read_table(name="acia_hackathon_2024.actuarydb_wizards.client_a_features")
 
-# Example data - replace this with loading your actual data
-data = {
-    'new_person_id': [10000, 10001, 10002, 10003],
-    'Leave_Type': ['ALL NON-OCC', 'No Leave Experience', 'No Leave Experience', 'No Leave Experience'],
-    'Unique_Member_Count': [1, 1, 1, 1],
-    'LTD_Claim_Counter': [0, None, None, None],
-    'WC_any_Claim_Counter': [0, None, None, None],
-    'STD_Claim_Counter': [1, None, None, None],
-    'total_lost_work_days': [41, 0, 0, 0],
-    'performance_score': ['No Rating Available', '3.Meeting Expectations', '3.Meeting Expectations', '3.Meeting Expectations'],
-    'tenure': [29.88, 5.92, 18.25, 3.99],
-    'final_AnnualSalary': [106092, 139300, 115700, 81435],
-    'CHRON_ALLERGIES_IND': [0, 0, 0, 1],
-    'CHRON_ARTHRITIS_IND': [0, 1, 0, 0],
-    'CHRON_ASTHMA_IND': [0, 0, 0, 0],
-    'total_medical_cost': [107.03, 71.85, 8341.23, 1779.46]
-}
-
-df = pd.DataFrame(data)
+# Convert PySpark DataFrame to pandas DataFrame
+df = final_features_df.toPandas()
 
 # Step 2: Data preprocessing
-# Encode categorical columns
+# Encode categorical columns with LabelEncoder
 label_encoder = LabelEncoder()
 
-# Let's encode 'Leave_Type' and 'performance_score'
+# Encode 'Leave_Type' and 'performance_score'
 df['Leave_Type'] = label_encoder.fit_transform(df['Leave_Type'])
 df['performance_score'] = label_encoder.fit_transform(df['performance_score'])
 
@@ -55,22 +41,29 @@ feature_columns = [
 
 target_column = 'total_lost_work_days'
 
+# Step 3: Handle missing values with SimpleImputer (mean strategy for numerical columns)
+imputer = SimpleImputer(strategy='mean')
+
+# Prepare features (X) and target (y)
 X = df[feature_columns]  # Features
 y = df[target_column]    # Target
 
-# Step 3: Train-test split
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+# Impute missing values
+X_imputed = imputer.fit_transform(X)
 
-# Step 4: Train a Random Forest Classifier
+# Step 4: Train-test split
+X_train, X_test, y_train, y_test = train_test_split(X_imputed, y, test_size=0.3, random_state=42)
+
+# Step 5: Train a Random Forest Classifier
 rf_clf = RandomForestClassifier(n_estimators=100, random_state=42)
 rf_clf.fit(X_train, y_train)
 
 # Make predictions
 y_pred = rf_clf.predict(X_test)
 
-# Step 5: Log model and metrics to MLflow
+# Step 6: Log model and metrics to MLflow
 with mlflow.start_run():
-    # Log the model
+    # Log the model to MLflow
     mlflow.sklearn.log_model(rf_clf, "random_forest_model")
 
     # Calculate metrics
@@ -78,7 +71,7 @@ with mlflow.start_run():
     precision = precision_score(y_test, y_pred, average='weighted', zero_division=1)
     recall = recall_score(y_test, y_pred, average='weighted', zero_division=1)
 
-    # Log metrics
+    # Log metrics to MLflow
     mlflow.log_metric("accuracy", accuracy)
     mlflow.log_metric("precision", precision)
     mlflow.log_metric("recall", recall)
@@ -88,39 +81,35 @@ with mlflow.start_run():
     print(f"Random Forest Classifier Precision: {precision}")
     print(f"Random Forest Classifier Recall: {recall}")
 
-    # Log parameters
+    # Log model parameters
     mlflow.log_param("n_estimators", 100)
     mlflow.log_param("random_state", 42)
 ```
 
-### Explanation of the Code:
+### Key Fixes and Changes:
 
-1. **Data Preparation**:
-   - The dataset includes categorical columns like `Leave_Type` and `performance_score`, which are encoded using `LabelEncoder` so that the scikit-learn model can handle them.
-   - The numerical columns (like `total_medical_cost`, `tenure`, etc.) are used directly as features.
+1. **Handling Missing Values**:
+   - Added `SimpleImputer` with a mean strategy to handle any missing values in the dataset. This prevents errors when using scikit-learn models like Random Forest, which cannot handle `NaN` values directly.
 
-2. **Train-Test Split**:
-   - We split the dataset into 70% training and 30% testing using `train_test_split()`.
+2. **Label Encoding**:
+   - Used `LabelEncoder` to encode categorical columns (`Leave_Type` and `performance_score`) so that scikit-learn can work with them.
 
-3. **Random Forest Classifier**:
-   - We use **scikit-learn's RandomForestClassifier** to train the model on the training data and make predictions on the test data.
+3. **Feature Store Integration**:
+   - The feature store data is read using Databricks Feature Store's `read_table()` method and converted to a pandas DataFrame for use with scikit-learn.
 
-4. **Model Logging with MLflow**:
-   - The trained model and evaluation metrics (accuracy, precision, and recall) are logged to MLflow.
-   - Hyperparameters like `n_estimators` and `random_state` are also logged for reproducibility.
+4. **Logging to MLflow**:
+   - The trained model and evaluation metrics (accuracy, precision, recall) are logged to MLflow.
+   - Model parameters (`n_estimators`, `random_state`) are also logged to MLflow for reproducibility.
 
-### Notes:
-- **Target Column**: In this example, I assumed you want to predict `total_lost_work_days` as the target. If you have a different target, simply adjust the `target_column`.
-- **Feature Engineering**: You may need to do additional feature engineering (e.g., handling missing values or scaling features) depending on your actual dataset.
+### How to Run This Code:
 
-### How to Run:
-1. **Ensure scikit-learn and MLflow are Installed**:
-   ```bash
+1. **Install Dependencies** (if needed):
+   ```python
    %pip install scikit-learn mlflow
    ```
 
-2. **Run the Code**: Paste the code into a notebook, adjust any column names if necessary, and run the code.
+2. **Run the Code**: Run the entire notebook in your Databricks environment, and it should load the data from your feature store, train a model, and log the results to MLflow.
 
-3. **Check MLflow UI**: After running the code, you can view the model and metrics logged in MLflow by navigating to **Experiments** > **Runs** in your Databricks workspace.
+3. **Check MLflow UI**: You can navigate to the **Experiments** section in Databricks to view your model and its metrics.
 
-Let me know if you encounter any issues or need further adjustments!
+Let me know if you encounter any further issues, and I'll be happy to assist!
