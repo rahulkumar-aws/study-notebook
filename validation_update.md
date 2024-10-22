@@ -21,6 +21,7 @@ The error message you're seeing has two main components:
 import mlflow
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
+from sklearn.impute import SimpleImputer
 import databricks.feature_store as feature_store
 
 # Function to load the model from the registry and make predictions on data from Feature Store
@@ -56,17 +57,23 @@ def load_and_use_model():
     label_encoder = LabelEncoder()
     X_test['Leave_Type'] = label_encoder.fit_transform(X_test['Leave_Type'])
 
-    # Step 4: Ensure all feature columns are numeric
-    X_test = X_test.apply(pd.to_numeric, errors='coerce')
+    # Step 4: Impute missing values (NaNs) in the feature columns (X)
+    # Use mean imputation for simplicity, but this can be adjusted
+    imputer = SimpleImputer(strategy='mean')
+    X_test_imputed = imputer.fit_transform(X_test)
 
-    # Step 5: Make predictions using the loaded model
-    predictions = model.predict(X_test)
+    # Step 5: Ensure all feature columns are numeric
+    X_test_imputed = pd.DataFrame(X_test_imputed, columns=feature_columns)
+
+    # Step 6: Make predictions using the loaded model
+    predictions = model.predict(X_test_imputed)
 
     # Output the predictions
     print("Predictions:", predictions)
 
 if __name__ == "__main__":
     load_and_use_model()
+
 ```
 
 ### Key Changes:
