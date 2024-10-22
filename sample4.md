@@ -1,11 +1,13 @@
-It seems you're working on a pipeline that reads from Databricks Feature Store, trains a **Random Forest Classifier**, and logs the model and metrics to **MLflow**. Let's fix the code to ensure it handles missing values, works with your feature store, and integrates with MLflow without issues.
+The error `input y contains NaN` indicates that the target variable `y` (in this case, `total_lost_work_days`) contains missing (`NaN`) values, which are not supported by scikit-learn models.
 
-Here are the key changes we’ll make:
-1. Handle any missing values using `SimpleImputer`.
-2. Ensure the data types are correctly transformed for scikit-learn compatibility.
-3. Fix any potential issues with feature columns being categorical or having missing values.
+To fix this, we need to handle missing values in the target column (`y`) as well. Here are the options for handling missing target values:
 
-### Fixed Code with Handling for Missing Values and Categorical Data:
+1. **Remove rows with missing target values**: If rows with missing target values can be discarded, you can drop them.
+2. **Impute missing target values**: If you prefer not to drop rows, you can fill the missing values in the target column using a similar strategy as the feature imputation (e.g., using the mean or median).
+
+I'll show you how to remove rows with missing target values (`y`) to ensure that scikit-learn can train the model successfully.
+
+### Updated Code to Handle Missing Values in Target Column:
 
 ```python
 import pandas as pd
@@ -41,14 +43,18 @@ feature_columns = [
 
 target_column = 'total_lost_work_days'
 
-# Step 3: Handle missing values with SimpleImputer (mean strategy for numerical columns)
+# Step 3: Handle missing values in features and target
+# Remove rows where the target variable (y) is NaN
+df = df.dropna(subset=[target_column])
+
+# Use SimpleImputer to fill missing values in the features (mean strategy for numerical columns)
 imputer = SimpleImputer(strategy='mean')
 
 # Prepare features (X) and target (y)
 X = df[feature_columns]  # Features
 y = df[target_column]    # Target
 
-# Impute missing values
+# Impute missing values in the features
 X_imputed = imputer.fit_transform(X)
 
 # Step 4: Train-test split
@@ -86,30 +92,19 @@ with mlflow.start_run():
     mlflow.log_param("random_state", 42)
 ```
 
-### Key Fixes and Changes:
+### Key Changes:
+1. **Handling Missing Values in Target (`y`)**:
+   - We drop rows where the target column (`total_lost_work_days`) contains missing (`NaN`) values. This ensures the target (`y`) has no missing values, allowing scikit-learn to train the model properly.
 
-1. **Handling Missing Values**:
-   - Added `SimpleImputer` with a mean strategy to handle any missing values in the dataset. This prevents errors when using scikit-learn models like Random Forest, which cannot handle `NaN` values directly.
+2. **Impute Missing Values in Features**:
+   - Missing values in the feature columns are filled using the **mean** strategy with `SimpleImputer`. This ensures that all feature columns are ready for model training.
 
-2. **Label Encoding**:
-   - Used `LabelEncoder` to encode categorical columns (`Leave_Type` and `performance_score`) so that scikit-learn can work with them.
+### How It Works:
+- **Drop Missing Target Values**: The line `df = df.dropna(subset=[target_column])` removes any rows where the target value is `NaN`.
+- **Impute Missing Feature Values**: Missing values in the feature columns are handled using `SimpleImputer`, which fills them with the mean value for each column.
 
-3. **Feature Store Integration**:
-   - The feature store data is read using Databricks Feature Store's `read_table()` method and converted to a pandas DataFrame for use with scikit-learn.
+### Next Steps:
+1. **Run the Code** in your Databricks environment.
+2. **Check MLflow UI**: After the code runs, you can view the model, metrics, and parameters in MLflow.
 
-4. **Logging to MLflow**:
-   - The trained model and evaluation metrics (accuracy, precision, recall) are logged to MLflow.
-   - Model parameters (`n_estimators`, `random_state`) are also logged to MLflow for reproducibility.
-
-### How to Run This Code:
-
-1. **Install Dependencies** (if needed):
-   ```python
-   %pip install scikit-learn mlflow
-   ```
-
-2. **Run the Code**: Run the entire notebook in your Databricks environment, and it should load the data from your feature store, train a model, and log the results to MLflow.
-
-3. **Check MLflow UI**: You can navigate to the **Experiments** section in Databricks to view your model and its metrics.
-
-Let me know if you encounter any further issues, and I'll be happy to assist!
+Let me know if this resolves the issue or if you need further assistance!
