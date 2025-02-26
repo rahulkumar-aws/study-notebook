@@ -74,6 +74,10 @@ from pyspark.sql import SparkSession
 import importlib.resources as pkg_resources
 import naacsanlyt_etl.config  # Import config resources
 from naacsanlyt_etl.logging_util import setup_logging  # ✅ Use logging util
+from pyspark.sql.types import StructType, StructField, StringType, LongType, TimestampType
+from pyspark.sql import Row
+from pyspark.sql.functions import lit
+from datetime import datetime
 
 class BaseETL:
     def __init__(self, db_type="oracle"):
@@ -121,7 +125,11 @@ class BaseETL:
 def save_metadata(self, table_name, start_time, row_count, status):
     """Save metadata after processing a table."""
 
-    end_time = datetime.now()  # 🔥 Ensure correct timestamp
+    end_time = datetime.now()  # ✅ Ensure correct timestamp format
+
+    # ✅ FIX: Convert start_time & end_time to PySpark TIMESTAMP
+    start_time = self.spark.createDataFrame([(start_time,)], ["start_time"]).withColumn("start_time", lit(start_time)).selectExpr("CAST(start_time AS TIMESTAMP)").collect()[0][0]
+    end_time = self.spark.createDataFrame([(end_time,)], ["end_time"]).withColumn("end_time", lit(end_time)).selectExpr("CAST(end_time AS TIMESTAMP)").collect()[0][0]
 
     metadata_schema = StructType([
         StructField("db_type", StringType(), True),
@@ -132,18 +140,17 @@ def save_metadata(self, table_name, start_time, row_count, status):
         StructField("status", StringType(), True),
     ])
 
-    metadata_df = self.spark.createDataFrame([
-        Row(self.db_type, table_name, start_time, end_time, row_count, status)
-    ], metadata_schema)
+    # ✅ FIX: Use list of tuples instead of Row()
+    metadata_data = [(self.db_type, table_name, start_time, end_time, row_count, status)]
+    metadata_df = self.spark.createDataFrame(metadata_data, metadata_schema)
 
-    # 🔥🔥 FIX: Always append metadata instead of overwriting 🔥🔥
+    # ✅ FIX: Always append metadata without overwriting
     metadata_df.write.format("delta") \
-        .mode("append") \  # ✅ Ensures history is maintained
+        .mode("append") \
         .option("mergeSchema", "true") \
         .saveAsTable(self.metadata_table)
 
     self.logger.info(f"📊 Metadata saved for {table_name}: {row_count} rows, Start Time: {start_time}, End Time: {end_time}, Status: {status}")
-
 
 ```
 
