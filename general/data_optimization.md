@@ -118,20 +118,32 @@ class BaseETL:
         """)
         self.logger.info(f"✅ Metadata table {self.metadata_table} is ready.")
 
-    def save_metadata(self, table_name, start_time, row_count, status):
-        """Save metadata after processing a table."""
-        end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+def save_metadata(self, table_name, start_time, row_count, status):
+    """Save metadata after processing a table."""
 
-        metadata_df = self.spark.createDataFrame([
-            (self.db_type, table_name, start_time, end_time, row_count, status)
-        ], ["db_type", "table_name", "etl_start_time", "etl_end_time", "row_count", "status"])
+    end_time = datetime.now()  # 🔥 Ensure correct timestamp
 
-        metadata_df.write.format("delta") \
-            .mode("append") \
-            .option("mergeSchema", "true") \
-            .saveAsTable(self.metadata_table)
+    metadata_schema = StructType([
+        StructField("db_type", StringType(), True),
+        StructField("table_name", StringType(), True),
+        StructField("etl_start_time", TimestampType(), True),
+        StructField("etl_end_time", TimestampType(), True),
+        StructField("row_count", LongType(), True),
+        StructField("status", StringType(), True),
+    ])
 
-        self.logger.info(f"📊 Metadata saved for {table_name}: {row_count} rows, Status: {status}")
+    metadata_df = self.spark.createDataFrame([
+        Row(self.db_type, table_name, start_time, end_time, row_count, status)
+    ], metadata_schema)
+
+    # 🔥🔥 FIX: Always append metadata instead of overwriting 🔥🔥
+    metadata_df.write.format("delta") \
+        .mode("append") \  # ✅ Ensures history is maintained
+        .option("mergeSchema", "true") \
+        .saveAsTable(self.metadata_table)
+
+    self.logger.info(f"📊 Metadata saved for {table_name}: {row_count} rows, Start Time: {start_time}, End Time: {end_time}, Status: {status}")
+
 
 ```
 
