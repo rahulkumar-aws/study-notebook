@@ -94,36 +94,45 @@ class BaseETL:
         except FileNotFoundError:
             raise FileNotFoundError(f"❌ Configuration file '{config_filename}' not found in DBFS or package resources.")
 
-    def setup_metadata_table(self):
-        """Creates the Delta metadata table if it doesn't exist."""
-        self.spark.sql(f"""
-            CREATE TABLE IF NOT EXISTS {self.metadata_table} (
-                db_type STRING,
-                table_name STRING,
-                etl_start_time TIMESTAMP,
-                end_time TIMESTAMP,
-                row_count LONG,
-                status STRING
-            ) USING delta;
-        """)
-        self.logger.info(f"✅ Metadata table {self.metadata_table} is ready.")
+  def setup_metadata_table(self):
+      """Creates the Delta metadata table if it doesn't exist."""
+      self.logger.info(f"🔍 Checking if metadata table {self.metadata_table} exists...")
+  
+      try:
+          # Check if table exists
+          self.spark.sql(f"DESCRIBE TABLE {self.metadata_table}")
+          self.logger.info(f"✅ Metadata table {self.metadata_table} exists.")
+      except:
+          self.logger.warning(f"⚠️ Metadata table {self.metadata_table} does not exist. Creating it...")
+          self.spark.sql(f"""
+              CREATE TABLE IF NOT EXISTS {self.metadata_table} (
+                  db_type STRING,
+                  table_name STRING,
+                  etl_start_time TIMESTAMP,
+                  etl_end_time TIMESTAMP,
+                  row_count LONG,
+                  status STRING
+              ) USING delta;
+          """)
+          self.logger.info(f"✅ Metadata table {self.metadata_table} created successfully.")
 
-    def save_metadata(self, table_name, start_time, row_count, status):
-        """Save metadata after processing a table."""
-        end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+  def save_metadata(self, table_name, start_time, row_count, status):
+      """Save metadata after processing a table."""
+      end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+  
+      # 🔥🔥 FIX: Rename `end_time` to `etl_end_time` before writing 🔥🔥
+      metadata_df = self.spark.createDataFrame([
+          (self.db_type, table_name, start_time, end_time, row_count, status)
+      ], ["db_type", "table_name", "etl_start_time", "etl_end_time", "row_count", "status"])
+  
+      # 🔥🔥 FIX: Enable Schema Evolution for Delta Writes 🔥🔥
+      metadata_df.write.format("delta") \
+          .mode("append") \
+          .option("mergeSchema", "true") \
+          .saveAsTable(self.metadata_table)
+  
+      self.logger.info(f"📊 Metadata saved for {table_name}: {row_count} rows, Status: {status}")
 
-        # 🔥🔥 FIX: Rename `start_time` to `etl_start_time` before writing 🔥🔥
-        metadata_df = self.spark.createDataFrame([
-            (self.db_type, table_name, start_time, end_time, row_count, status)
-        ], ["db_type", "table_name", "etl_start_time", "end_time", "row_count", "status"])
-
-        # 🔥🔥 FIX: Enable Schema Evolution for Delta Writes 🔥🔥
-        metadata_df.write.format("delta") \
-            .mode("append") \
-            .option("mergeSchema", "true") \
-            .saveAsTable(self.metadata_table)
-
-        self.logger.info(f"📊 Metadata saved for {table_name}: {row_count} rows, Status: {status}")
 ```
 
 ---
