@@ -28,6 +28,7 @@ This happens because **reading from Oracle** is typically **parallelized** via J
 ```python
 from naacsanlyt_etl.base_etl import BaseETL
 from datetime import datetime
+from pyspark.sql.functions import col
 
 class OracleToUCETL(BaseETL):
     def __init__(self):
@@ -46,7 +47,7 @@ class OracleToUCETL(BaseETL):
 
         self.logger.info(f"🔍 Reading data from Oracle table: {table_name}")
 
-        # Use partitioning to parallelize read
+        # Read data
         df = self.spark.read \
             .format("jdbc") \
             .option("url", jdbc_url) \
@@ -54,10 +55,13 @@ class OracleToUCETL(BaseETL):
             .option("user", oracle_cfg["user"]) \
             .option("password", oracle_cfg["password"]) \
             .option("driver", "oracle.jdbc.OracleDriver") \
-            .option("numPartitions", 8) \  # Adjust based on table size
+            .option("numPartitions", 8) \
             .option("fetchsize", 10000) \
             .load()
-        
+
+        # 🔥🔥 FIX 1: Ensure all column names are lowercase 🔥🔥
+        df = df.select([col(c).alias(c.lower()) for c in df.columns])
+
         self.logger.info(f"✅ Read {df.count()} records from {table_name}")
         return df
 
@@ -68,12 +72,15 @@ class OracleToUCETL(BaseETL):
 
         self.logger.info(f"🚀 Writing data to Delta table: {target_table}")
 
-        # Optimize writing strategy
-        df = df.repartition(8)  # Ensure parallelism
+        # 🔥🔥 FIX 2: Refresh Delta table metadata 🔥🔥
+        self.spark.sql(f"REFRESH TABLE {target_table}")
+
+        # 🔥🔥 FIX 3: Enable schema evolution 🔥🔥
         df.write \
             .format(uc_cfg["target_format"]) \
             .mode("overwrite") \
             .option("overwriteSchema", "true") \
+            .option("mergeSchema", "true") \
             .saveAsTable(target_table)
 
         self.logger.info(f"✅ Successfully written to {target_table}")
@@ -90,6 +97,7 @@ class OracleToUCETL(BaseETL):
 
         self.save_metadata(table_name, start_time, row_count, "Success")
         self.logger.info(f"✅ ETL completed for {table_name}\n")
+
 ```
 
 ---
