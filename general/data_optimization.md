@@ -21,6 +21,28 @@ This **fixes the `start_time` conflict** by:
 ```
 
 ---
+## logging_util.py (Console-Only Logging)
+```python
+import logging
+import sys
+
+def setup_logging():
+    """Setup logging to print logs to the console (Databricks captures logs automatically)."""
+    
+    logging.basicConfig(
+        level=logging.INFO,  # Set log level
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)]  # 🔥 Logs go directly to console
+    )
+
+    logger = logging.getLogger(__name__)
+    logger.info("✅ Console logging initialized successfully.")
+    return logger
+
+```
+
+
+
 
 ## **✅ 1. `oracle.yml` (Configuration File)**
 ```yaml
@@ -47,17 +69,17 @@ unity_catalog:
 ```python
 import os
 import yaml
-import logging
 from datetime import datetime
 from pyspark.sql import SparkSession
 import importlib.resources as pkg_resources
 import naacsanlyt_etl.config  # Import config resources
+from naacsanlyt_etl.logging_util import setup_logging  # ✅ Use logging util
 
 class BaseETL:
     def __init__(self, db_type="oracle"):
         """Initialize ETL framework with logging and metadata tracking."""
         self.db_type = db_type
-        self.logger = self.setup_logging()
+        self.logger = setup_logging()  # ✅ Initialize logging from util
         self.config = self.load_config(db_type)
 
         self.spark = SparkSession.builder.appName(f"{db_type.upper()}_ETL").enableHiveSupport().getOrCreate()
@@ -66,18 +88,6 @@ class BaseETL:
         # Setup Delta metadata table
         self.metadata_table = "dasp_system.na_etl_dev.etl_metadata"
         self.setup_metadata_table()
-
-    def setup_logging(self):
-        """Setup logging configuration."""
-        log_file = "/dbfs/logs/etl.log"
-        os.makedirs("/dbfs/logs", exist_ok=True)
-
-        logging.basicConfig(
-            filename=log_file,
-            level=logging.INFO,
-            format="%(asctime)s - %(levelname)s - %(message)s"
-        )
-        return logging.getLogger(__name__)
 
     def load_config(self, db_type):
         """Loads the YAML configuration file from DBFS first, else falls back to packaged resources."""
@@ -94,44 +104,34 @@ class BaseETL:
         except FileNotFoundError:
             raise FileNotFoundError(f"❌ Configuration file '{config_filename}' not found in DBFS or package resources.")
 
-  def setup_metadata_table(self):
-      """Creates the Delta metadata table if it doesn't exist."""
-      self.logger.info(f"🔍 Checking if metadata table {self.metadata_table} exists...")
-  
-      try:
-          # Check if table exists
-          self.spark.sql(f"DESCRIBE TABLE {self.metadata_table}")
-          self.logger.info(f"✅ Metadata table {self.metadata_table} exists.")
-      except:
-          self.logger.warning(f"⚠️ Metadata table {self.metadata_table} does not exist. Creating it...")
-          self.spark.sql(f"""
-              CREATE TABLE IF NOT EXISTS {self.metadata_table} (
-                  db_type STRING,
-                  table_name STRING,
-                  etl_start_time TIMESTAMP,
-                  etl_end_time TIMESTAMP,
-                  row_count LONG,
-                  status STRING
-              ) USING delta;
-          """)
-          self.logger.info(f"✅ Metadata table {self.metadata_table} created successfully.")
+    def setup_metadata_table(self):
+        """Creates the Delta metadata table if it doesn't exist."""
+        self.spark.sql(f"""
+            CREATE TABLE IF NOT EXISTS {self.metadata_table} (
+                db_type STRING,
+                table_name STRING,
+                etl_start_time TIMESTAMP,
+                etl_end_time TIMESTAMP,
+                row_count LONG,
+                status STRING
+            ) USING delta;
+        """)
+        self.logger.info(f"✅ Metadata table {self.metadata_table} is ready.")
 
-  def save_metadata(self, table_name, start_time, row_count, status):
-      """Save metadata after processing a table."""
-      end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-  
-      # 🔥🔥 FIX: Rename `end_time` to `etl_end_time` before writing 🔥🔥
-      metadata_df = self.spark.createDataFrame([
-          (self.db_type, table_name, start_time, end_time, row_count, status)
-      ], ["db_type", "table_name", "etl_start_time", "etl_end_time", "row_count", "status"])
-  
-      # 🔥🔥 FIX: Enable Schema Evolution for Delta Writes 🔥🔥
-      metadata_df.write.format("delta") \
-          .mode("append") \
-          .option("mergeSchema", "true") \
-          .saveAsTable(self.metadata_table)
-  
-      self.logger.info(f"📊 Metadata saved for {table_name}: {row_count} rows, Status: {status}")
+    def save_metadata(self, table_name, start_time, row_count, status):
+        """Save metadata after processing a table."""
+        end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        metadata_df = self.spark.createDataFrame([
+            (self.db_type, table_name, start_time, end_time, row_count, status)
+        ], ["db_type", "table_name", "etl_start_time", "etl_end_time", "row_count", "status"])
+
+        metadata_df.write.format("delta") \
+            .mode("append") \
+            .option("mergeSchema", "true") \
+            .saveAsTable(self.metadata_table)
+
+        self.logger.info(f"📊 Metadata saved for {table_name}: {row_count} rows, Status: {status}")
 
 ```
 
@@ -142,11 +142,13 @@ class BaseETL:
 from naacsanlyt_etl.base_etl import BaseETL
 from datetime import datetime
 from pyspark.sql.functions import col
+from naacsanlyt_etl.logging_util import setup_logging  # ✅ Use logging util
 
 class OracleToUCETL(BaseETL):
     def __init__(self):
         """Initialize Oracle ETL process."""
         super().__init__(db_type="oracle")
+        self.logger = setup_logging()  # ✅ Use logging util
 
     def read_from_oracle(self, table_name):
         """Reads a table from Oracle into a PySpark DataFrame using JDBC."""
@@ -171,27 +173,10 @@ class OracleToUCETL(BaseETL):
             .option("fetchsize", 10000) \
             .load()
 
-        # 🔥🔥 FIX: Ensure all column names are lowercase 🔥🔥
         df = df.select([col(c).alias(c.lower()) for c in df.columns])
 
         self.logger.info(f"✅ Read {df.count()} records from {table_name}")
         return df
-
-    def write_to_uc(self, df, table_name):
-        """Writes the DataFrame to Unity Catalog in Delta format efficiently."""
-        uc_cfg = self.config["unity_catalog"]
-        target_table = f"{uc_cfg['target_catalog']}.{uc_cfg['target_schema']}.{table_name.split('.')[-1]}"
-
-        self.logger.info(f"🚀 Writing data to Delta table: {target_table}")
-
-        df.write \
-            .format(uc_cfg["target_format"]) \
-            .mode("overwrite") \
-            .option("overwriteSchema", "true") \
-            .option("mergeSchema", "true") \
-            .saveAsTable(target_table)
-
-        self.logger.info(f"✅ Successfully written to {target_table}")
 
     def run_etl(self, table_name):
         """Runs ETL for a single table."""
@@ -205,6 +190,42 @@ class OracleToUCETL(BaseETL):
 
         self.save_metadata(table_name, start_time, row_count, "Success")
         self.logger.info(f"✅ ETL completed for {table_name}\n")
+
+```
+
+## Runner
+```python
+import argparse
+from naacsanlyt_etl.etl_jobs.oracle_etl import OracleToUCETL
+from naacsanlyt_etl.logging_util import setup_logging  # ✅ Use logging util
+
+class ETLRunner:
+    def __init__(self, db_type="oracle"):
+        """Initialize ETL Runner and process tables."""
+        self.db_type = db_type
+        self.logger = setup_logging()  # ✅ Use logging util
+
+        self.etl = OracleToUCETL()
+        self.tables = self.get_tables_from_config()
+
+        self.logger.info(f"🔄 ETL Runner initialized for {db_type.upper()} with tables: {self.tables}")
+
+    def get_tables_from_config(self):
+        """Retrieve table names from the loaded configuration file."""
+        return [table["name"] for table in self.etl.config["oracle"]["bridge"]["tables"]]
+
+    def run(self):
+        """Runs ETL for each table."""
+        for table_name in self.tables:
+            self.logger.info(f"🚀 Running ETL for table: {table_name}")
+            self.etl.run_etl(table_name)
+
+def main():
+    runner = ETLRunner()
+    runner.run()
+
+if __name__ == "__main__":
+    main()
 ```
 
 ---
