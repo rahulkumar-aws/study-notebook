@@ -6,6 +6,8 @@ Since table **comments are not needed**, I have removed them while keeping every
 ### **🔹 Full Updated `BaseETL.py`**
 ```python
 import argparse
+from datetime import datetime
+from pyspark.sql.types import StructType, StructField, StringType, LongType, TimestampType, DoubleType
 from crba_etl.utils.logger import setup_logging
 from crba_etl.config_parser import ConfigParser
 
@@ -85,6 +87,74 @@ class BaseETL:
             self.logger.info(f"✅ Metadata table `{self.metadata_table}` created successfully.")
         else:
             self.logger.info(f"✅ Metadata table `{self.metadata_table}` already exists.")
+
+    def save_metadata(self, table_name, etl_start_time, row_count, status):
+        """Saves metadata for the ETL job in Unity Catalog."""
+        etl_end_time = datetime.now()
+        execution_time = (etl_end_time - etl_start_time).total_seconds()
+        job_id = f"{table_name}_{etl_start_time.strftime('%Y%m%d%H%M%S')}"  # ✅ Unique job ID
+
+        metadata_schema = StructType([
+            StructField("table_name", StringType(), True),
+            StructField("database_name", StringType(), True),
+            StructField("schema_name", StringType(), True),
+            StructField("host", StringType(), True),
+            StructField("port", StringType(), True),
+            StructField("user", StringType(), True),
+            StructField("etl_start_time", TimestampType(), True),
+            StructField("etl_end_time", TimestampType(), True),
+            StructField("row_count", LongType(), True),
+            StructField("status", StringType(), True),
+            StructField("job_id", StringType(), True),
+            StructField("execution_time", DoubleType(), True),
+        ])
+
+        metadata_data = [(table_name, self.database, self.schema, self.attributes.get("host"), 
+                          str(self.attributes.get("port")), self.attributes.get("user"), 
+                          etl_start_time, etl_end_time, row_count, status, job_id, execution_time)]
+
+        metadata_df = self.spark.createDataFrame(metadata_data, metadata_schema)
+
+        metadata_df.write.format("delta") \
+            .mode("append") \
+            .option("mergeSchema", "true") \
+            .saveAsTable(self.metadata_table)
+
+        self.logger.info(
+            f"📊 Metadata updated for `{table_name}` in `{self.metadata_table}`: {row_count} rows, Status: {status}, Job ID: {job_id}"
+        )
+
+    def write_to_uc(self, df, table_name):
+        """
+        Writes DataFrame to Unity Catalog in Delta format.
+        - Uses `overwrite` (default) or `append` based on config.
+        """
+        target_catalog = self.config["unity_catalog"]["target_catalog"]
+        target_schema = self.config["unity_catalog"]["target_schema"]
+        target_format = self.config["unity_catalog"].get("target_format", "delta")
+
+        append_tables = set(self.config["unity_catalog"].get("append_tables", []))
+
+        mode = "overwrite"  # ✅ Default is overwrite
+        if table_name in append_tables:
+            mode = "append"
+
+        full_table_name = f"{target_catalog}.{target_schema}.{table_name}"
+
+        self.logger.info(f"📤 Writing data to `{full_table_name}` in `{target_format}` format with mode `{mode}`...")
+
+        try:
+            if mode == "overwrite":
+                df.write.format(target_format).mode("overwrite").saveAsTable(full_table_name)
+            elif mode == "append":
+                df.write.format(target_format).mode("append").saveAsTable(full_table_name)
+            else:
+                raise ValueError(f"❌ Invalid write mode `{mode}` provided.")
+            self.logger.info(f"✅ Successfully wrote to `{full_table_name}`.")
+        except Exception as e:
+            self.logger.error(f"❌ Failed to write to `{full_table_name}`: {str(e)}")
+            raise
+
 ```
 
 ---
