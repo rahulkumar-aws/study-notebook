@@ -105,18 +105,39 @@ def get_column_stats(spark, jdbc_url, jdbc_properties, schema, table_name):
 
 ## **✅ Step 3: Function to Profile a Host**
 ```python
-def profile_host(spark, project_name, jdbc_url, jdbc_properties, db_type, schema):
+def profile_host(spark, host_info, db_type, schema):
     """
     Profiles all tables from a given database host and saves stats to a Delta Table.
     
     Args:
     - spark (SparkSession): Active Spark session.
-    - project_name (str): Project associated with this database.
-    - jdbc_url (str): JDBC connection string.
-    - jdbc_properties (dict): Dictionary containing user, password, driver.
+    - host_info (dict): Dictionary containing project name, JDBC URL, username, and password.
     - db_type (str): Database type ("mssql" or "oracle").
     - schema (str): Schema name.
     """
+    project_name = host_info["project"]
+    jdbc_url = host_info["jdbc_url"]
+
+    # ✅ Define JDBC properties separately for MSSQL & Oracle
+    if db_type == "mssql":
+        jdbc_properties = {
+            "user": host_info["user"],
+            "password": host_info["password"],
+            "driver": "com.microsoft.sqlserver.jdbc.SQLServerDriver",
+            "encrypt": "true",
+            "trustServerCertificate": "true",
+            "loginTimeout": "30"
+        }
+    elif db_type == "oracle":
+        jdbc_properties = {
+            "user": host_info["user"],
+            "password": host_info["password"],
+            "driver": "oracle.jdbc.OracleDriver",
+            "oracle.jdbc.timezoneAsRegion": "false"
+        }
+    else:
+        raise ValueError(f"❌ Unsupported database type: {db_type}")
+
     print(f"🔍 Profiling host: {jdbc_url} | Project: {project_name} | DB Type: {db_type}")
 
     tables = get_tables_from_schema(spark, jdbc_url, jdbc_properties, schema)
@@ -145,6 +166,7 @@ def profile_host(spark, project_name, jdbc_url, jdbc_properties, db_type, schema
 
         except Exception as e:
             print(f"❌ Failed to profile {table} from {jdbc_url} (Project: {project_name}): {str(e)}")
+
 ```
 
 ---
