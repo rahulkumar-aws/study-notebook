@@ -1,5 +1,5 @@
-### **📌 Complete Databricks Notebook Code for Table Profiling**
-This standalone notebook script will:  
+### **📌 Full Databricks Notebook Code for Profiling MSSQL & Oracle**
+This standalone script will:  
 ✅ **Loop through multiple MSSQL & Oracle hosts** and collect **table stats**.  
 ✅ **Fetch row count, column count, and schema details**.  
 ✅ **Save results in a Delta Table (`table_profile_stats`)**.  
@@ -8,7 +8,6 @@ This standalone notebook script will:
 ---
 
 ## **✅ Step 1: Define Database Connections**
-Modify these **with your actual connection details**:
 ```python
 from pyspark.sql import SparkSession
 from datetime import datetime
@@ -17,21 +16,17 @@ import logging
 # ✅ Initialize Spark session in Databricks
 spark = SparkSession.builder.appName("DBProfiling").enableHiveSupport().getOrCreate()
 
-# ✅ MSSQL Hosts with project names
+# ✅ MSSQL Hosts with project names and credentials
 mssql_hosts = [
-    {"project": "project1_prod", "jdbc_url": "jdbc:sqlserver://mssql-host-1:1433;databaseName=db1"},
-    {"project": "project2_UAT", "jdbc_url": "jdbc:sqlserver://mssql-host-2:1433;databaseName=db2"},
+    {"project": "project1_prod", "jdbc_url": "jdbc:sqlserver://mssql-host-1:1433;databaseName=db1", "user": "mssql_user1", "password": "password1"},
+    {"project": "project2_UAT", "jdbc_url": "jdbc:sqlserver://mssql-host-2:1433;databaseName=db2", "user": "mssql_user2", "password": "password2"}
 ]
 
-# ✅ Oracle Hosts with project names
+# ✅ Oracle Hosts with project names and credentials
 oracle_hosts = [
-    {"project": "project1_prod", "jdbc_url": "jdbc:oracle:thin:@oracle-host-1:1521:orcl"},
-    {"project": "project2_UAT", "jdbc_url": "jdbc:oracle:thin:@oracle-host-2:1521:orcl"},
+    {"project": "project1_prod", "jdbc_url": "jdbc:oracle:thin:@oracle-host-1:1521:orcl", "user": "oracle_user1", "password": "password1"},
+    {"project": "project2_UAT", "jdbc_url": "jdbc:oracle:thin:@oracle-host-2:1521:orcl", "user": "oracle_user2", "password": "password2"}
 ]
-
-# ✅ JDBC properties
-mssql_properties = {"user": "mssql_user", "password": "mssql_password", "driver": "com.microsoft.sqlserver.jdbc.SQLServerDriver"}
-oracle_properties = {"user": "oracle_user", "password": "oracle_password", "driver": "oracle.jdbc.OracleDriver"}
 
 # ✅ Target Delta Table
 delta_table = "dasp_system.na_etl_dev.table_profile_stats"
@@ -49,7 +44,6 @@ def get_tables_from_schema(spark, jdbc_url, jdbc_properties, schema):
     """Fetches tables from the schema, using INFORMATION_SCHEMA for MSSQL and Oracle."""
     logger.info(f"🔍 Getting tables from schema `{schema}` for {jdbc_url}...")
 
-    # ✅ Use different queries for MSSQL & Oracle
     if "sqlserver" in jdbc_url:
         query = f"(SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{schema}' AND TABLE_TYPE = 'BASE TABLE') AS table_list"
     elif "oracle" in jdbc_url:
@@ -100,22 +94,34 @@ def get_column_stats(spark, jdbc_url, jdbc_properties, schema, table_name):
 
 ## **✅ Step 3: Function to Profile a Host**
 ```python
-def profile_host(spark, project_name, jdbc_url, jdbc_properties, db_type, schema):
+def profile_host(spark, host_info, db_type, schema):
     """
     Profiles all tables from a given database host and saves stats to a Delta Table.
+    
+    Args:
+    - spark (SparkSession): Active Spark session.
+    - host_info (dict): Dictionary containing project name, JDBC URL, username, and password.
+    - db_type (str): Database type ("mssql" or "oracle").
+    - schema (str): Schema name.
     """
+    project_name = host_info["project"]
+    jdbc_url = host_info["jdbc_url"]
+
+    jdbc_properties = {
+        "user": host_info["user"],
+        "password": host_info["password"],
+        "driver": "com.microsoft.sqlserver.jdbc.SQLServerDriver" if db_type == "mssql" else "oracle.jdbc.OracleDriver"
+    }
+
     print(f"🔍 Profiling host: {jdbc_url} | Project: {project_name} | DB Type: {db_type}")
 
-    # ✅ Fetch tables from schema
     tables = get_tables_from_schema(spark, jdbc_url, jdbc_properties, schema)
 
     for table in tables:
         try:
-            # ✅ Get row count & column stats
             row_count = get_row_count(spark, jdbc_url, jdbc_properties, schema, table)
             column_stats = get_column_stats(spark, jdbc_url, jdbc_properties, schema, table)
 
-            # ✅ Prepare data for writing
             table_profile = {
                 "project": project_name,
                 "host": jdbc_url,
@@ -128,7 +134,6 @@ def profile_host(spark, project_name, jdbc_url, jdbc_properties, db_type, schema
                 "profiling_date": datetime.now()
             }
 
-            # ✅ Convert to DataFrame & Append to Delta Table
             df = spark.createDataFrame([table_profile])
             df.write.format("delta").mode("append").saveAsTable(delta_table)
 
@@ -142,13 +147,11 @@ def profile_host(spark, project_name, jdbc_url, jdbc_properties, db_type, schema
 
 ## **✅ Step 4: Run Profiling for All Hosts**
 ```python
-# ✅ Profile MSSQL Hosts
-for host_info in mssql_hosts:
-    profile_host(spark, host_info["project"], host_info["jdbc_url"], mssql_properties, "mssql", "dbo")
+for host in mssql_hosts:
+    profile_host(spark, host, "mssql", "dbo")
 
-# ✅ Profile Oracle Hosts
-for host_info in oracle_hosts:
-    profile_host(spark, host_info["project"], host_info["jdbc_url"], oracle_properties, "oracle", "HR")
+for host in oracle_hosts:
+    profile_host(spark, host, "oracle", "HR")
 ```
 
 ---
@@ -161,10 +164,5 @@ for host_info in oracle_hosts:
 
 ---
 
-## **🚀 Final Steps: Run This in a Databricks Notebook**
-Simply **paste the full code into a Databricks notebook cell** and run it.
-
----
-
-## **🚀 Done! Now Table Profiling Runs for All Hosts.**
-Let me know if you need any refinements! 🔥🚀
+## **🚀 Done! Full Standalone Notebook Ready for Execution.**
+Let me know if you need refinements! 🚀🔥
