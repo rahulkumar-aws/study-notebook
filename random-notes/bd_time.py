@@ -10,7 +10,45 @@ import pytz
 
 class BdTimestampDeltaLoad(JOBExecutor):
     DELTA_TABLE_WITH_WATERMARK = [
-        "AHI_Client_DR_RequestTypes",
+        "Service_Request_Header",
+        "Account_Handling",
+        "AHI_AI_Waive_LP",
+        "AHI_Auto_Id",
+        "AHI_Captive_Info",
+        "AHI_Cert_Info",
+        "Ahi_Cert_Limit",
+        "AHI_Client_Direct_Release",
+        "AHI_COI_Endorsement",
+        "AHI_Comments",
+        "AHI_Contact_Info",
+        "AHI_Distribution",
+        "AHI_Email_Notifications",
+        "AHI_Invoice_Endorsement_Audits",
+        "AHI_Limits",
+        "AHI_Lob",
+        "AHI_PITD_Delivery",
+        "AHI_Spl_Account_Instructions",
+        "Client_Master",
+        "Client_Series_Mapping",
+        "Delivery_Contact",
+        "Disbursement_Payable",
+        "Holiday_RPT",
+        "Policy_Comment",
+        "Policy_Contact",
+        "Service_Request_Distribution",
+        "Service_Request_Group_Header",
+        "Service_Request_History",
+        "Service_Request_Invoices",
+        "Service_Request_Issue_Details",
+        "WorkSpace_Additional_Delivery",
+        "WorkSpace_Comments",
+        "WorkSpace_Delivery_Contact",
+        "WorkSpace_Header",
+        "WorkSpace_Header_Distribution",
+        "WorkSpace_Policy_Contact",
+        "WorkSpace_Policy_Container",
+        "AHI_Request_Compliance",
+        "Compliance_Out_Of_Scope_Details"
     ]
 
     def __init__(self, spark, environment):
@@ -30,7 +68,41 @@ class BdTimestampDeltaLoad(JOBExecutor):
         self.load_report = []
 
     def execute(self):
-        self.process_raw_layer()
+        self._process_raw_layer()
+
+    def _process_raw_layer(self):
+        conn = self.get_secret(self.env_config.secret_name)
+        jdbc_url = f"jdbc:sqlserver://{self.env_config.host}:{self.env_config.port};databaseName={self.database}"
+        jdbc_props = {
+            "user": conn.get("username"),
+            "password": conn.get("password"),
+            "driver": "com.microsoft.sqlserver.jdbc.SQLServerDriver",
+            "authenticationScheme": "NTLM",
+            "domain": "AONNET",
+            "integratedSecurity": "true",
+            "trustServerCertificate": "true"
+        }
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {
+                executor.submit(self.process_table, table, jdbc_url, jdbc_props, self.application_name, "dbo"): table
+                for table in self.DELTA_TABLE_WITH_WATERMARK
+            }
+
+            for future in as_completed(futures):
+                table = futures[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    self.logger.error(f"❌ Error processing table `{table}`: {str(e)}")
+                    raise
+
+        if self.load_report:
+            df = self.spark.createDataFrame(self.load_report)
+            self.logger.info("📊 Load Summary Report:")
+            df.show(truncate=False)
+        else:
+            self.logger.info("📭 No tables were updated in this run.")
 
     def get_secret(self, secret_name):
         client = boto3.client('secretsmanager', region_name='us-east-1')
@@ -171,40 +243,3 @@ class BdTimestampDeltaLoad(JOBExecutor):
         """
         self.logger.info(f"MERGE SQL:\n{merge_sql}")
         self.spark.sql(merge_sql)
-
-def process_raw_layer(self):
-    conn = self.get_secret(self.env_config.secret_name)
-    jdbc_url = f"jdbc:sqlserver://{self.env_config.host}:{self.env_config.port};databaseName={self.database}"
-    jdbc_props = {
-        "user": conn.get("username"),
-        "password": conn.get("password"),
-        "driver": "com.microsoft.sqlserver.jdbc.SQLServerDriver",
-        "authenticationScheme": "NTLM",
-        "domain": "AONNET",
-        "integratedSecurity": "true",
-        "trustServerCertificate": "true"
-    }
-
-    # 🔁 Map futures to table names for traceback
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {
-            executor.submit(
-                self.process_table, table, jdbc_url, jdbc_props, self.application_name, "dbo"
-            ): table for table in self.DELTA_TABLE_WITH_WATERMARK
-        }
-
-        for future in as_completed(futures):
-            table = futures[future]
-            try:
-                future.result()
-            except Exception as e:
-                self.logger.error(f"❌ Error processing table `{table}`: {str(e)}")
-                raise
-
-    if self.load_report:
-        df = self.spark.createDataFrame(self.load_report)
-        self.logger.info("📊 Load Summary Report:")
-        df.show(truncate=False)
-    else:
-        self.logger.info("📭 No tables were updated in this run.")
-
