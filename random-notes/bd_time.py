@@ -172,30 +172,39 @@ class BdTimestampDeltaLoad(JOBExecutor):
         self.logger.info(f"MERGE SQL:\n{merge_sql}")
         self.spark.sql(merge_sql)
 
-    def process_raw_layer(self):
-        conn = self.get_secret(self.env_config.secret_name)
-        jdbc_url = f"jdbc:sqlserver://{self.env_config.host}:{self.env_config.port};databaseName={self.database}"
-        jdbc_props = {
-            "user": conn.get("username"),
-            "password": conn.get("password"),
-            "driver": "com.microsoft.sqlserver.jdbc.SQLServerDriver",
-            "authenticationScheme": "NTLM",
-            "domain": "AONNET",
-            "integratedSecurity": "true",
-            "trustServerCertificate": "true"
+def process_raw_layer(self):
+    conn = self.get_secret(self.env_config.secret_name)
+    jdbc_url = f"jdbc:sqlserver://{self.env_config.host}:{self.env_config.port};databaseName={self.database}"
+    jdbc_props = {
+        "user": conn.get("username"),
+        "password": conn.get("password"),
+        "driver": "com.microsoft.sqlserver.jdbc.SQLServerDriver",
+        "authenticationScheme": "NTLM",
+        "domain": "AONNET",
+        "integratedSecurity": "true",
+        "trustServerCertificate": "true"
+    }
+
+    # 🔁 Map futures to table names for traceback
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {
+            executor.submit(
+                self.process_table, table, jdbc_url, jdbc_props, self.application_name, "dbo"
+            ): table for table in self.DELTA_TABLE_WITH_WATERMARK
         }
 
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = [
-                executor.submit(self.process_table, table, jdbc_url, jdbc_props, self.application_name, "dbo")
-                for table in self.DELTA_TABLE_WITH_WATERMARK
-            ]
-            for future in as_completed(futures):
+        for future in as_completed(futures):
+            table = futures[future]
+            try:
                 future.result()
+            except Exception as e:
+                self.logger.error(f"❌ Error processing table `{table}`: {str(e)}")
+                raise
 
-        if self.load_report:
-            df = self.spark.createDataFrame(self.load_report)
-            self.logger.info("📊 Load Summary Report:")
-            df.show(truncate=False)
-        else:
-            self.logger.info("📭 No tables were updated in this run.")
+    if self.load_report:
+        df = self.spark.createDataFrame(self.load_report)
+        self.logger.info("📊 Load Summary Report:")
+        df.show(truncate=False)
+    else:
+        self.logger.info("📭 No tables were updated in this run.")
+
