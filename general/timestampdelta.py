@@ -9,19 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pytz
 
 class BdTimestampDeltaLoad(JOBExecutor):
-    DELTA_TABLE_WITH_WATERMARK = [
-        "Service_Request_Header", "Account_Handling", "AHI_AI_Waive_LP", "AHI_Auto_Id",
-        "AHI_Captive_Info", "AHI_Cert_Info", "Ahi_Cert_Limit", "AHI_Client_Direct_Release",
-        "AHI_COI_Endorsement", "AHI_Comments", "AHI_Contact_Info", "AHI_Distribution",
-        "AHI_Email_Notifications", "AHI_Invoice_Endorsement_Audits", "AHI_Limits", "AHI_Lob",
-        "AHI_PITD_Delivery", "AHI_Spl_Account_Instructions", "Client_Master", "Client_Series_Mapping",
-        "Delivery_Contact", "Disbursement_Payable", "Holiday_RPT", "Policy_Comment", "Policy_Contact",
-        "Service_Request_Distribution", "Service_Request_Group_Header", "Service_Request_History",
-        "Service_Request_Invoices", "Service_Request_Issue_Details", "WorkSpace_Additional_Delivery",
-        "WorkSpace_Comments", "WorkSpace_Delivery_Contact", "WorkSpace_Header",
-        "WorkSpace_Header_Distribution", "WorkSpace_Policy_Contact", "WorkSpace_Policy_Container",
-        "AHI_Request_Compliance", "Compliance_Out_Of_Scope_Details"
-    ]
+    DELTA_TABLE_WITH_WATERMARK = [ ... ]  # Keep your table list here
 
     def __init__(self, spark, environment):
         super().__init__(spark, environment)
@@ -40,6 +28,7 @@ class BdTimestampDeltaLoad(JOBExecutor):
         self.load_report = []
 
     def execute(self):
+        self.job_start_time = datetime.now(pytz.timezone("US/Central"))
         self._process_raw_layer()
 
     def _process_raw_layer(self):
@@ -68,18 +57,22 @@ class BdTimestampDeltaLoad(JOBExecutor):
                     self.logger.error(f"❌ Error processing table `{table}`: {str(e)}")
 
         if self.load_report:
+            for r in self.load_report:
+                r["job_start_time"] = self.job_start_time.strftime('%Y-%m-%d %H:%M:%S')
             df = self.spark.createDataFrame(self.load_report)
             df.createOrReplaceTempView("load_report")
-            self.logger.info("📊 Load Summary Report:")
+            report_table = f"{Constants.METADATA_CATALOG}.{Constants.METADATA_SCHEMA}.load_report_{self.application_name.lower()}"
+            df.write.format("delta").mode("append").saveAsTable(report_table)
+            self.logger.info(f"📊 Load Summary Report appended to {report_table}:")
             self.spark.sql("SELECT * FROM load_report ORDER BY table_name").show(truncate=False)
         else:
             self.logger.info("📭 No tables were updated in this run.")
 
     def get_secret(self, secret_name):
-        client = boto3.client('secretsmanager', region_name='us-east-1')
+        client = boto3.client("secretsmanager", region_name="us-east-1")
         try:
             response = client.get_secret_value(SecretId=secret_name)
-            return json.loads(response['SecretString'])
+            return json.loads(response["SecretString"])
         except Exception as e:
             self.logger.error(f"Error retrieving secret: {e}")
             return None
@@ -115,7 +108,7 @@ class BdTimestampDeltaLoad(JOBExecutor):
         df_columns = df.columns
         df.createOrReplaceTempView("source")
 
-        on_clause = " AND " .join([f"target.`{c}` = source.`{c}`" for c in pk_columns])
+        on_clause = " AND ".join([f"target.`{c}` = source.`{c}`" for c in pk_columns])
         set_clause = ", ".join([f"target.`{c}` = source.`{c}`" for c in df_columns])
         insert_cols = ", ".join([f"`{c}`" for c in df_columns])
         insert_vals = ", ".join([f"source.`{c}`" for c in df_columns])
@@ -133,17 +126,12 @@ class BdTimestampDeltaLoad(JOBExecutor):
         try:
             self.spark.sql(merge_sql)
 
-            updated_sql = f"""
-                SELECT COUNT(*) as cnt FROM source
-                WHERE EXISTS (SELECT 1 FROM {target_discovery_table} AS target WHERE {on_clause})
-            """
-            inserted_sql = f"""
-                SELECT COUNT(*) as cnt FROM source
-                WHERE NOT EXISTS (SELECT 1 FROM {target_discovery_table} AS target WHERE {on_clause})
-            """
-
-            updated_count = self.spark.sql(updated_sql).collect()[0]["cnt"]
-            inserted_count = self.spark.sql(inserted_sql).collect()[0]["cnt"]
+            updated_count = self.spark.sql(
+                f"SELECT COUNT(*) as cnt FROM source WHERE EXISTS (SELECT 1 FROM {target_discovery_table} AS target WHERE {on_clause})"
+            ).collect()[0]["cnt"]
+            inserted_count = self.spark.sql(
+                f"SELECT COUNT(*) as cnt FROM source WHERE NOT EXISTS (SELECT 1 FROM {target_discovery_table} AS target WHERE {on_clause})"
+            ).collect()[0]["cnt"]
 
             operation_type = "INSERT"
             if updated_count > 0 and inserted_count > 0:
@@ -176,20 +164,20 @@ class BdTimestampDeltaLoad(JOBExecutor):
         if not table_exists:
             self.logger.info(f"🆕 Table `{target_discovery_table}` does not exist. Proceeding with full load.")
             is_first_run = True
-            last_ts = datetime.strptime('1900-01-01 00:00:00', '%Y-%m-%d %H:%M:%S')
+            last_ts = datetime.strptime("1900-01-01 00:00:00", "%Y-%m-%d %H:%M:%S")
         else:
             try:
                 wm_df = self.spark.sql(f"SELECT last_updated FROM {watermark_table} WHERE table_name = '{table}'")
                 is_first_run = wm_df.count() == 0
                 if is_first_run:
                     self.logger.info(f"📥 Table exists but no watermark found for `{table}`. Performing full load.")
-                    last_ts = datetime.strptime('1900-01-01 00:00:00', '%Y-%m-%d %H:%M:%S')
+                    last_ts = datetime.strptime("1900-01-01 00:00:00", "%Y-%m-%d %H:%M:%S")
                 else:
                     self.logger.info(f"🔁 Delta load for `{table}` — watermark exists.")
                     last_ts = wm_df.collect()[0]["last_updated"]
             except:
                 is_first_run = True
-                last_ts = datetime.strptime('1900-01-01 00:00:00', '%Y-%m-%d %H:%M:%S')
+                last_ts = datetime.strptime("1900-01-01 00:00:00", "%Y-%m-%d %H:%M:%S")
                 self.logger.info(f"📥 Failed to read watermark for `{table}`. Performing full load.")
 
         mod_col_query = f"""
@@ -226,12 +214,12 @@ class BdTimestampDeltaLoad(JOBExecutor):
                 "updated": 0,
                 "record_count": inserted
             })
-            self.watermark_mgr.update_watermark(table.lower(), datetime.now(pytz.timezone("US/Central")), application_name)
+            self.watermark_mgr.update_watermark(table.lower(), self.job_start_time, application_name)
         elif not is_first_run:
             pk_columns = self.get_primary_keys(jdbc_url, jdbc_props, schema_name, table)
             self.logger.info(f"🔄 Executing Delta Merge for `{table}`")
             self.merge_data(df, target_discovery_table, pk_columns, table)
-            self.watermark_mgr.update_watermark(table.lower(), datetime.now(pytz.timezone("US/Central")), application_name)
+            self.watermark_mgr.update_watermark(table.lower(), self.job_start_time, application_name)
         else:
             self.logger.warning(f"⚠️ Skipping merge for `{table}`: Table exists but no watermark. Possible inconsistency.")
 
