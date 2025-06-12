@@ -107,14 +107,18 @@ class BdTimestampDeltaLoad(JOBExecutor):
 
     def merge_data(self, df, target_discovery_table, pk_columns, table_name):
         target_cols = set(self.get_table_schema(target_discovery_table))
-        df = df.select([col(c).alias(c.lower().replace(" ", "_")) for c in df.columns if c.lower().replace(" ", "_") in target_cols])
-        missing_cols = [c for c in df.columns if c not in target_cols]
-        if missing_cols:
-            self.logger.warning("⚠️ Columns in source but missing in target for `%s`: %s", table_name, missing_cols)
+        df = df.select([col(c).alias(c.lower().replace(" ", "_")) for c in df.columns])
+        df = df.select([col(c) for c in df.columns if c in target_cols])
+
+        missing_pk = list(set(pk_columns) - set(df.columns))
+        if missing_pk:
+            self.logger.warning("⚠️ Merge keys not found in source df for `%s`: %s", table_name, missing_pk)
+            return
+
         df_columns = df.columns
         df.createOrReplaceTempView("source")
 
-        on_clause = " AND ".join([f"target.`{c}` = source.`{c}`" for c in pk_columns])
+        on_clause = " AND ".join([f"target.`{c}` = source.`{c}`" for c in pk_columns if c in df.columns])
         set_clause = ", ".join([f"target.`{c}` = source.`{c}`" for c in df_columns])
         insert_cols = ", ".join([f"`{c}`" for c in df_columns])
         insert_vals = ", ".join([f"source.`{c}`" for c in df_columns])
@@ -151,75 +155,6 @@ class BdTimestampDeltaLoad(JOBExecutor):
 
         except Exception as e:
             self.logger.error(f"❌ MERGE failed for `{target_discovery_table}`: {e}")
-
-    def process_table(self, table, jdbc_url, jdbc_props, application_name, schema_name):
-        env_config = Constants.ENVIRONMENTS[self.environment]
-        target_discovery_table = f"{env_config['DISCOVERY_CATALOG']}.{Constants.DISCOVERY_SCHEMA_BD}.{table}"
-        watermark_table = f"{env_config['METADATA_CATALOG']}.{Constants.METADATA_SCHEMA}.watermark_{application_name}"
-
-        try:
-            self.spark.sql(f"SELECT * FROM {target_discovery_table} LIMIT 1")
-            table_exists = True
-        except:
-            table_exists = False
-
-        if not table_exists:
-            self.logger.info(f"🆕 Table `{target_discovery_table}` does not exist. Proceeding with full load.")
-            is_first_run = True
-            last_ts = datetime.strptime('1900-01-01 00:00:00', '%Y-%m-%d %H:%M:%S')
-        else:
-            try:
-                wm_df = self.spark.sql(f"SELECT last_updated FROM {watermark_table} WHERE table_name = '{table}'")
-                is_first_run = wm_df.count() == 0
-                last_ts = datetime.strptime('1900-01-01 00:00:00', '%Y-%m-%d %H:%M:%S') if is_first_run else wm_df.collect()[0]["last_updated"]
-            except:
-                is_first_run = True
-                last_ts = datetime.strptime('1900-01-01 00:00:00', '%Y-%m-%d %H:%M:%S')
-                self.logger.info(f"📥 Failed to read watermark for `{table}`. Performing full load.")
-
-        mod_col_query = f"""
-            SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_NAME = '{table}' AND TABLE_SCHEMA = '{schema_name}'
-            AND COLUMN_NAME IN ('ModifyOn', 'ModifiedTime', 'ModifiedDateTime', 'Date', 'CreatedTime', 'CreatedDate')
-        """
-        mod_col_df = self.get_dataframe(jdbc_url, jdbc_props, mod_col_query)
-        modification_column = None if mod_col_df.count() == 0 else mod_col_df.collect()[0]["COLUMN_NAME"]
-
-        if not modification_column:
-            self.logger.error(f"No valid modification column found for {table}")
-            return
-
-        last_ts_str = last_ts.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-        query = f"SELECT * FROM {schema_name}.[{table}]" if is_first_run else f"SELECT * FROM {schema_name}.[{table}] WHERE {modification_column} > '{last_ts_str}'"
-
-        df = self.get_dataframe(jdbc_url, jdbc_props, query)
-        self.logger.info("📘 Source schema for `%s`: %s", table, df.dtypes)
-        df = df.withColumn(modification_column, to_timestamp(col(modification_column), "yyyy-MM-dd HH:mm:ss.SSS"))
-        df = df.select([col(c).alias(c.lower().replace(" ", "_")) for c in df.columns])
-
-        if df.count() == 0:
-            self.logger.info(f"⚠️ No new data found for table `{table}`. Skipping.")
-            return
-
-        if not table_exists:
-            self.logger.info("📗 Target table schema for `%s`: %s", table, self.get_table_schema(target_discovery_table))
-            df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(target_discovery_table)
-            inserted = df.count()
-            self.load_report.append({
-                "table_name": table.lower(),
-                "operation": "INSERT",
-                "inserted": inserted,
-                "updated": 0,
-                "record_count": inserted
-            })
-            self.watermark_mgr.update_watermark(table.lower(), self.job_start_time, application_name)
-        elif not is_first_run:
-            pk_columns = self.get_primary_keys(jdbc_url, jdbc_props, schema_name, table)
-            self.logger.info("📗 Target table schema for `%s`: %s", table, self.get_table_schema(target_discovery_table))
-            self.merge_data(df, target_discovery_table, pk_columns, table)
-            self.watermark_mgr.update_watermark(table.lower(), self.job_start_time, application_name)
-        else:
-            self.logger.warning(f"⚠️ Skipping merge for `{table}`: Table exists but no watermark. Possible inconsistency.")
 
     def get_table_schema(self, table_name):
         return [field.name for field in self.spark.table(table_name).schema.fields]
