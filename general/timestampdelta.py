@@ -9,7 +9,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pytz
 
 class BdTimestampDeltaLoad(JOBExecutor):
-    DELTA_TABLE_WITH_WATERMARK = [ ... ]  # Keep your table list here
+    DELTA_TABLE_WITH_WATERMARK = [
+        # Add your table list here...
+    ]
 
     def __init__(self, spark, environment):
         super().__init__(spark, environment)
@@ -58,7 +60,7 @@ class BdTimestampDeltaLoad(JOBExecutor):
 
         if self.load_report:
             for r in self.load_report:
-                r["job_start_time"] = self.job_start_time.strftime('%Y-%m-%d %H:%M:%S')
+                r['job_start_time'] = self.job_start_time.strftime('%Y-%m-%d %H:%M:%S')
             df = self.spark.createDataFrame(self.load_report)
             df.createOrReplaceTempView("load_report")
             report_table = f"{Constants.METADATA_CATALOG}.{Constants.METADATA_SCHEMA}.load_report_{self.application_name.lower()}"
@@ -69,10 +71,10 @@ class BdTimestampDeltaLoad(JOBExecutor):
             self.logger.info("📭 No tables were updated in this run.")
 
     def get_secret(self, secret_name):
-        client = boto3.client("secretsmanager", region_name="us-east-1")
+        client = boto3.client('secretsmanager', region_name='us-east-1')
         try:
             response = client.get_secret_value(SecretId=secret_name)
-            return json.loads(response["SecretString"])
+            return json.loads(response['SecretString'])
         except Exception as e:
             self.logger.error(f"Error retrieving secret: {e}")
             return None
@@ -104,7 +106,11 @@ class BdTimestampDeltaLoad(JOBExecutor):
         return [r["COLUMN_NAME"].lower() for r in df.collect()]
 
     def merge_data(self, df, target_discovery_table, pk_columns, table_name):
-        df = df.select([col(c).alias(c.lower().replace(" ", "_")) for c in df.columns])
+        target_cols = set(self.get_table_schema(target_discovery_table))
+        df = df.select([col(c).alias(c.lower().replace(" ", "_")) for c in df.columns if c.lower().replace(" ", "_") in target_cols])
+        missing_cols = [c for c in df.columns if c not in target_cols]
+        if missing_cols:
+            self.logger.warning("⚠️ Columns in source but missing in target for `%s`: %s", table_name, missing_cols)
         df_columns = df.columns
         df.createOrReplaceTempView("source")
 
@@ -126,12 +132,8 @@ class BdTimestampDeltaLoad(JOBExecutor):
         try:
             self.spark.sql(merge_sql)
 
-            updated_count = self.spark.sql(
-                f"SELECT COUNT(*) as cnt FROM source WHERE EXISTS (SELECT 1 FROM {target_discovery_table} AS target WHERE {on_clause})"
-            ).collect()[0]["cnt"]
-            inserted_count = self.spark.sql(
-                f"SELECT COUNT(*) as cnt FROM source WHERE NOT EXISTS (SELECT 1 FROM {target_discovery_table} AS target WHERE {on_clause})"
-            ).collect()[0]["cnt"]
+            updated_count = self.spark.sql(f"SELECT COUNT(*) as cnt FROM source WHERE EXISTS (SELECT 1 FROM {target_discovery_table} AS target WHERE {on_clause})").collect()[0]["cnt"]
+            inserted_count = self.spark.sql(f"SELECT COUNT(*) as cnt FROM source WHERE NOT EXISTS (SELECT 1 FROM {target_discovery_table} AS target WHERE {on_clause})").collect()[0]["cnt"]
 
             operation_type = "INSERT"
             if updated_count > 0 and inserted_count > 0:
@@ -164,20 +166,15 @@ class BdTimestampDeltaLoad(JOBExecutor):
         if not table_exists:
             self.logger.info(f"🆕 Table `{target_discovery_table}` does not exist. Proceeding with full load.")
             is_first_run = True
-            last_ts = datetime.strptime("1900-01-01 00:00:00", "%Y-%m-%d %H:%M:%S")
+            last_ts = datetime.strptime('1900-01-01 00:00:00', '%Y-%m-%d %H:%M:%S')
         else:
             try:
                 wm_df = self.spark.sql(f"SELECT last_updated FROM {watermark_table} WHERE table_name = '{table}'")
                 is_first_run = wm_df.count() == 0
-                if is_first_run:
-                    self.logger.info(f"📥 Table exists but no watermark found for `{table}`. Performing full load.")
-                    last_ts = datetime.strptime("1900-01-01 00:00:00", "%Y-%m-%d %H:%M:%S")
-                else:
-                    self.logger.info(f"🔁 Delta load for `{table}` — watermark exists.")
-                    last_ts = wm_df.collect()[0]["last_updated"]
+                last_ts = datetime.strptime('1900-01-01 00:00:00', '%Y-%m-%d %H:%M:%S') if is_first_run else wm_df.collect()[0]["last_updated"]
             except:
                 is_first_run = True
-                last_ts = datetime.strptime("1900-01-01 00:00:00", "%Y-%m-%d %H:%M:%S")
+                last_ts = datetime.strptime('1900-01-01 00:00:00', '%Y-%m-%d %H:%M:%S')
                 self.logger.info(f"📥 Failed to read watermark for `{table}`. Performing full load.")
 
         mod_col_query = f"""
@@ -193,10 +190,10 @@ class BdTimestampDeltaLoad(JOBExecutor):
             return
 
         last_ts_str = last_ts.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-        query = f"SELECT * FROM {schema_name}.[{table}]" if is_first_run else \
-                f"SELECT * FROM {schema_name}.[{table}] WHERE {modification_column} > '{last_ts_str}'"
+        query = f"SELECT * FROM {schema_name}.[{table}]" if is_first_run else f"SELECT * FROM {schema_name}.[{table}] WHERE {modification_column} > '{last_ts_str}'"
 
         df = self.get_dataframe(jdbc_url, jdbc_props, query)
+        self.logger.info("📘 Source schema for `%s`: %s", table, df.dtypes)
         df = df.withColumn(modification_column, to_timestamp(col(modification_column), "yyyy-MM-dd HH:mm:ss.SSS"))
         df = df.select([col(c).alias(c.lower().replace(" ", "_")) for c in df.columns])
 
@@ -205,6 +202,7 @@ class BdTimestampDeltaLoad(JOBExecutor):
             return
 
         if not table_exists:
+            self.logger.info("📗 Target table schema for `%s`: %s", table, self.get_table_schema(target_discovery_table))
             df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(target_discovery_table)
             inserted = df.count()
             self.load_report.append({
@@ -217,7 +215,7 @@ class BdTimestampDeltaLoad(JOBExecutor):
             self.watermark_mgr.update_watermark(table.lower(), self.job_start_time, application_name)
         elif not is_first_run:
             pk_columns = self.get_primary_keys(jdbc_url, jdbc_props, schema_name, table)
-            self.logger.info(f"🔄 Executing Delta Merge for `{table}`")
+            self.logger.info("📗 Target table schema for `%s`: %s", table, self.get_table_schema(target_discovery_table))
             self.merge_data(df, target_discovery_table, pk_columns, table)
             self.watermark_mgr.update_watermark(table.lower(), self.job_start_time, application_name)
         else:
