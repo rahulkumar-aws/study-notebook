@@ -9,20 +9,18 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pytz
 
 class BdTimestampDeltaLoad(JOBExecutor):
-    # List of tables to load
     DELTA_TABLE_WITH_WATERMARK = [
         "Service_Request_Header", "Account_Handling", "AHI_AI_Waive_LP", "AHI_Auto_Id",
         "AHI_Captive_Info", "AHI_Cert_Info", "Ahi_Cert_Limit", "AHI_Client_Direct_Release",
         "AHI_COI_Endorsement", "AHI_Comments", "AHI_Contact_Info", "AHI_Distribution",
-        "AHI_Email_Notifications", "AHI_Invoice_Endorsement_Audits", "AHI_Limits",
-        "AHI_Lob", "AHI_PITD_Delivery", "AHI_Spl_Account_Instructions", "Client_Master",
-        "Client_Series_Mapping", "Delivery_Contact", "Disbursement_Payable", "Holiday_RPT",
-        "Policy_Comment", "Policy_Contact", "Service_Request_Distribution",
-        "Service_Request_Group_Header", "Service_Request_History", "Service_Request_Invoices",
-        "Service_Request_Issue_Details", "WorkSpace_Additional_Delivery", "WorkSpace_Comments",
-        "WorkSpace_Delivery_Contact", "WorkSpace_Header", "WorkSpace_Header_Distribution",
-        "WorkSpace_Policy_Contact", "WorkSpace_Policy_Container", "AHI_Request_Compliance",
-        "Compliance_Out_Of_Scope_Details"
+        "AHI_Email_Notifications", "AHI_Invoice_Endorsement_Audits", "AHI_Limits", "AHI_Lob",
+        "AHI_PITD_Delivery", "AHI_Spl_Account_Instructions", "Client_Master", "Client_Series_Mapping",
+        "Delivery_Contact", "Disbursement_Payable", "Holiday_RPT", "Policy_Comment", "Policy_Contact",
+        "Service_Request_Distribution", "Service_Request_Group_Header", "Service_Request_History",
+        "Service_Request_Invoices", "Service_Request_Issue_Details", "WorkSpace_Additional_Delivery",
+        "WorkSpace_Comments", "WorkSpace_Delivery_Contact", "WorkSpace_Header",
+        "WorkSpace_Header_Distribution", "WorkSpace_Policy_Contact", "WorkSpace_Policy_Container",
+        "AHI_Request_Compliance", "Compliance_Out_Of_Scope_Details"
     ]
 
     def __init__(self, spark, environment):
@@ -169,23 +167,30 @@ class BdTimestampDeltaLoad(JOBExecutor):
         target_discovery_table = f"{env_config['DISCOVERY_CATALOG']}.{Constants.DISCOVERY_SCHEMA_BD}.{table}"
         watermark_table = f"{env_config['METADATA_CATALOG']}.{Constants.METADATA_SCHEMA}.watermark_{application_name}"
 
+        # ✅ Step 1: Check if table exists before watermark
         try:
-            # Check if watermark exists for the table to determine first-time load vs delta load
-            wm_df = self.spark.sql(f"SELECT last_updated FROM {watermark_table} WHERE table_name = '{table}'")
-            is_first_run = wm_df.count() == 0
-            if is_first_run:
-                self.logger.info(f"📥 First-time load for table `{table}` — no watermark found.")
-            else:
-                self.logger.info(f"🔁 Delta load for table `{table}` — watermark exists.")
-            # If watermark is missing, set default timestamp to ensure full load
-            last_ts = datetime.strptime('1900-01-01 00:00:00', '%Y-%m-%d %H:%M:%S') if is_first_run else wm_df.collect()[0]["last_updated"]
+            self.spark.sql(f"SELECT * FROM {target_discovery_table} LIMIT 1")
+            table_exists = True
         except:
-            # Handle cases where watermark lookup fails
-            is_first_run = True
-            self.logger.info(f"📥 First-time load for table `{table}` — watermark lookup failed.")
-            last_ts = datetime.strptime('1900-01-01 00:00:00', '%Y-%m-%d %H:%M:%S')
+            table_exists = False
 
-        # Find which column to use for delta detection by checking known modifiable columns
+        if not table_exists:
+            self.logger.info(f"🆕 Table `{target_discovery_table}` does not exist. Proceeding with full load.")
+            is_first_run = True
+        else:
+            try:
+                wm_df = self.spark.sql(f"SELECT last_updated FROM {watermark_table} WHERE table_name = '{table}'")
+                is_first_run = wm_df.count() == 0
+                if is_first_run:
+                    self.logger.info(f"📥 Table exists but no watermark found for `{table}`. Performing full load.")
+                else:
+                    self.logger.info(f"🔁 Delta load for `{table}` — watermark exists.")
+                last_ts = datetime.strptime('1900-01-01 00:00:00', '%Y-%m-%d %H:%M:%S') if is_first_run else wm_df.collect()[0]["last_updated"]
+            except:
+                is_first_run = True
+                self.logger.info(f"📥 Failed to read watermark for `{table}`. Performing full load.")
+                last_ts = datetime.strptime('1900-01-01 00:00:00', '%Y-%m-%d %H:%M:%S')
+
         mod_col_query = f"""
             SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
             WHERE TABLE_NAME = '{table}' AND TABLE_SCHEMA = '{schema_name}'
@@ -198,7 +203,6 @@ class BdTimestampDeltaLoad(JOBExecutor):
             self.logger.error(f"No valid modification column found for {table}")
             return
 
-        # Load data either FULL or DELTA based on watermark presence
         last_ts_str = last_ts.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
         query = f"SELECT * FROM {schema_name}.[{table}]" if is_first_run else \
                 f"SELECT * FROM {schema_name}.[{table}] WHERE {modification_column} > '{last_ts_str}'"
@@ -211,16 +215,7 @@ class BdTimestampDeltaLoad(JOBExecutor):
             self.logger.info(f"⚠️ No new data found for table `{table}`. Skipping.")
             return
 
-        # Check if Delta target table exists in Unity Catalog
-        try:
-            self.spark.sql(f"SELECT * FROM {target_discovery_table} LIMIT 1")
-            table_exists = True
-        except:
-            table_exists = False
-
         if not table_exists:
-            # First-time full load if table does not exist
-            self.logger.info(f"🆕 Target table `{target_discovery_table}` not found. Creating and loading full data.")
             df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(target_discovery_table)
             inserted = df.count()
             self.load_report.append({
@@ -230,17 +225,13 @@ class BdTimestampDeltaLoad(JOBExecutor):
                 "updated": 0,
                 "record_count": inserted
             })
-            # Update watermark for full load
             self.watermark_mgr.update_watermark(table.lower(), datetime.now(pytz.timezone("US/Central")), application_name)
         elif not is_first_run:
-            # Table exists and watermark is present — perform Delta merge
             pk_columns = self.get_primary_keys(jdbc_url, jdbc_props, schema_name, table)
-            self.logger.info(f"🔄 Executing Delta Merge for table `{table}`")
+            self.logger.info(f"🔄 Executing Delta Merge for `{table}`")
             self.merge_data(df, target_discovery_table, pk_columns, table)
-            # Update watermark for delta merge
             self.watermark_mgr.update_watermark(table.lower(), datetime.now(pytz.timezone("US/Central")), application_name)
         else:
-            # Watermark is not found but table already exists — skip to avoid duplicate merge
             self.logger.warning(f"⚠️ Skipping merge for `{table}`: Table exists but no watermark. Possible inconsistency.")
 
     def get_table_schema(self, table_name):
