@@ -167,7 +167,6 @@ class BdTimestampDeltaLoad(JOBExecutor):
         target_discovery_table = f"{env_config['DISCOVERY_CATALOG']}.{Constants.DISCOVERY_SCHEMA_BD}.{table}"
         watermark_table = f"{env_config['METADATA_CATALOG']}.{Constants.METADATA_SCHEMA}.watermark_{application_name}"
 
-        # ✅ Step 1: Check if table exists before watermark
         try:
             self.spark.sql(f"SELECT * FROM {target_discovery_table} LIMIT 1")
             table_exists = True
