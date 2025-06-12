@@ -115,7 +115,7 @@ class BdTimestampDeltaLoad(JOBExecutor):
         df_columns = df.columns
         df.createOrReplaceTempView("source")
 
-        on_clause = " AND ".join([f"target.`{c}` = source.`{c}`" for c in pk_columns])
+        on_clause = " AND " .join([f"target.`{c}` = source.`{c}`" for c in pk_columns])
         set_clause = ", ".join([f"target.`{c}` = source.`{c}`" for c in df_columns])
         insert_cols = ", ".join([f"`{c}`" for c in df_columns])
         insert_vals = ", ".join([f"source.`{c}`" for c in df_columns])
@@ -176,19 +176,21 @@ class BdTimestampDeltaLoad(JOBExecutor):
         if not table_exists:
             self.logger.info(f"🆕 Table `{target_discovery_table}` does not exist. Proceeding with full load.")
             is_first_run = True
+            last_ts = datetime.strptime('1900-01-01 00:00:00', '%Y-%m-%d %H:%M:%S')
         else:
             try:
                 wm_df = self.spark.sql(f"SELECT last_updated FROM {watermark_table} WHERE table_name = '{table}'")
                 is_first_run = wm_df.count() == 0
                 if is_first_run:
                     self.logger.info(f"📥 Table exists but no watermark found for `{table}`. Performing full load.")
+                    last_ts = datetime.strptime('1900-01-01 00:00:00', '%Y-%m-%d %H:%M:%S')
                 else:
                     self.logger.info(f"🔁 Delta load for `{table}` — watermark exists.")
-                last_ts = datetime.strptime('1900-01-01 00:00:00', '%Y-%m-%d %H:%M:%S') if is_first_run else wm_df.collect()[0]["last_updated"]
+                    last_ts = wm_df.collect()[0]["last_updated"]
             except:
                 is_first_run = True
-                self.logger.info(f"📥 Failed to read watermark for `{table}`. Performing full load.")
                 last_ts = datetime.strptime('1900-01-01 00:00:00', '%Y-%m-%d %H:%M:%S')
+                self.logger.info(f"📥 Failed to read watermark for `{table}`. Performing full load.")
 
         mod_col_query = f"""
             SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
