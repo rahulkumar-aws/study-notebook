@@ -30,9 +30,9 @@ class DataLoader:
         self.load_report = []
 
     def initialize(self):
+        self.spark = SparkSession.builder.appName(self.job_name).getOrCreate()
         self.logger = Logging.logger(self.job_name)
         self.logger.info("🛠 Initializing job configuration...")
-        self.logger = Logging.logger(self.job_name)
         self.spark = SparkSession.builder.appName(self.job_name).getOrCreate()
         self.watermark = Watermark(self.spark)
         configs = ConfigReader().get_configs()
@@ -171,9 +171,9 @@ class DataLoader:
         self.main()
 
     def main(self):
-        self.logger.info("🚀 BdRawDataLoader job started")
         try:
             self.initialize()
+            self.logger.info("🚀 DataLoader job started")
 
             region = self.spark.conf.get("spark.databricks.clusterUsageTags.dataPlaneRegion")
             self.logger.info(f"📍 Spark region: {region}")
