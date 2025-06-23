@@ -52,7 +52,6 @@ class DataLoader:
         self.spark = SparkSession.builder.appName(self.job_name).getOrCreate()
         self.logger = Logging.logger(self.job_name)
         self.logger.info("🛠 Initializing job configuration...")
-        self.spark = SparkSession.builder.appName(self.job_name).getOrCreate()
         self.watermark = Watermark(self.spark)
         configs = ConfigReader().get_configs()
         self.env_config = configs["env_config"]
@@ -186,16 +185,8 @@ class DataLoader:
         )
         JobInfo.load_job_info(self.spark, sc, job_history_conf, job_info_dict)
 
-    def run(self):
-        self.initialize()
-        self.check_connection()
-        self.logger.info("🚀 DataLoader job started")
-        self.main()
-
     def main(self):
         try:
-            self.logger.info("🚀 DataLoader job started")
-
             region = self.spark.conf.get("spark.databricks.clusterUsageTags.dataPlaneRegion")
             self.logger.info(f"📍 Spark region: {region}")
             sc = self.spark.sparkContext
@@ -228,9 +219,16 @@ class DataLoader:
             raise
 
 
-def run():
+
+
+
+
+    def run(self):
+        self.initialize()
+        self.check_connection()
+        self.logger.info("🚀 DataLoader job started")
+        self.main()
+
+
+if __name__ == '__main__':
     DataLoader().run()
-
-
-if __name__ == "__main__":
-    run()
