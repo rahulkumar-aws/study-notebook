@@ -29,6 +29,25 @@ class DataLoader:
         self.params = None
         self.load_report = []
 
+    def check_connection(self):
+        source = self.env_config['source']
+        username, password = AWSUtils.get_aws_secret_details(source['secret_name'], "us-east-1")
+        jdbc_url = f"jdbc:sqlserver://{source['host']}:{source['port']};databaseName={source['database']}"
+        self.logger.info(f"🔌 Checking JDBC connection to {jdbc_url}")
+        try:
+            test_df = self.spark.read.format("jdbc")\
+                .option("url", jdbc_url)\
+                .option("user", username)\
+                .option("password", password)\
+                .option("query", "SELECT 1")\
+                .option("driver", "com.microsoft.sqlserver.jdbc.SQLServerDriver")\
+                .load()
+            test_df.show()
+            self.logger.info("✅ JDBC connection test passed.")
+        except Exception as e:
+            self.logger.error(f"❌ JDBC connection test failed: {e}")
+            raise
+
     def initialize(self):
         self.spark = SparkSession.builder.appName(self.job_name).getOrCreate()
         self.logger = Logging.logger(self.job_name)
@@ -168,11 +187,13 @@ class DataLoader:
         JobInfo.load_job_info(self.spark, sc, job_history_conf, job_info_dict)
 
     def run(self):
+        self.initialize()
+        self.check_connection()
+        self.logger.info("🚀 DataLoader job started")
         self.main()
 
     def main(self):
         try:
-            self.initialize()
             self.logger.info("🚀 DataLoader job started")
 
             region = self.spark.conf.get("spark.databricks.clusterUsageTags.dataPlaneRegion")
