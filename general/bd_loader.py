@@ -15,6 +15,8 @@ from naanalytics_bd.utils.aws_utils import AWSUtils
 from naanalytics_bd.utils.job_history import JobInfo
 from naanalytics_bd.connectors.mssql_connector import MSSQLConnector
 from naanalytics_bd.connectors.databricks_connector import DatabricksConnector
+from naanalytics_bd.utils.transform import Transform
+from delta.tables import DeltaTable
 
 
 class BdRawDataLoader:
@@ -24,24 +26,35 @@ class BdRawDataLoader:
         self.logger = None
         self.watermark = None
         self.configs = None
+        self.params = None
 
     def initialize(self):
         self.logger = Logging.logger(self.job_name)
         self.spark = SparkSession.builder.appName(self.job_name).getOrCreate()
         self.watermark = Watermark(self.spark)
         self.configs = ConfigReader().get_configs()["env_config"]
+        self.params = ConfigReader().get_param_options()
+
+    def delta_merge(self, target, source_df, primary_key):
+        delta_table = DeltaTable.forName(self.spark, target)
+        pk_list = primary_key.split(',')
+        merge_condition = ' AND '.join([f"target.{pk} = source.{pk}" for pk in pk_list])
+
+        delta_table.alias("target").merge(
+            source_df.alias("source"), merge_condition
+        ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
 
     def process_table(self, table, source_conf, dest_conf, job_history_conf, region, initial_start_time):
         sc = self.spark.sparkContext
         job_info_dict = {}
         start_time = JobInfo.get_current_utc_ts()
 
-        self.logger.info(f"{Constants.BOLD}Processing table: {table}{Constants.RESET}")
+        self.logger.info(f"Processing table: {table}")
 
         watermark_table = f"{dest_conf['catalog']}.{job_history_conf['schema']}.{dest_conf['watermark_table']}"
         last_watermark = self.watermark.fetch_watermark(watermark_table, table, Constants.LAST_FETCH_COLUMN_NAME)
 
-        if last_watermark is None:
+        if self.params.load_type == "full_load" or last_watermark is None:
             self.logger.info(f"Full load for table: {table}")
             query = f"(SELECT * FROM [dbo].[{table}]) AS {table}_alias"
             last_watermark_str = "NA"
@@ -68,6 +81,17 @@ class BdRawDataLoader:
         if record_processed > 0:
             DatabricksConnector.volume_writer(df, volume_path, dest_conf['file_format'], dest_conf['write_mode'])
             self.logger.info(f"Loaded {record_processed} records into volume: {volume_path}")
+
+            # Merge into discovery table
+            target_table = f"{dest_conf['catalog']}.{dest_conf['discovery_schema']}.{table}"
+            df_sanitized = Transform.sanitize_cols(df)
+            primary_key = self.configs.get("primary_key_details", {}).get(table)
+
+            if primary_key:
+                self.logger.info(f"Merging into {target_table} on primary key: {primary_key}")
+                self.delta_merge(target_table, df_sanitized, primary_key)
+            else:
+                self.logger.warning(f"Primary key not defined for {table}, skipping merge.")
         else:
             self.logger.info(f"No data found for table: {table}")
 
@@ -76,7 +100,7 @@ class BdRawDataLoader:
             spark_context=sc,
             start_time=start_time,
             end_time=end_time,
-            data_source_name=Constants.BD,
+            data_source_name=self.configs.get("application_name"),
             source_configs=source_conf,
             source_schema=source_conf['database'],
             source_table=table,
@@ -111,7 +135,7 @@ class BdRawDataLoader:
             for table in table_list:
                 self.process_table(table, source_conf, dest_conf, job_history_conf, region, initial_start_time)
 
-            self.logger.info(f"{Constants.BOLD}Raw data load completed for all tables.{Constants.RESET}")
+            self.logger.info(f"Raw and discovery data load completed for all tables.")
 
         except Exception as e:
             self.logger.error(f"Exception: {str(e)}")
