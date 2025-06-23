@@ -87,8 +87,11 @@ class DataLoader:
         sc = self.spark.sparkContext
         job_info_dict = {}
         start_time = JobInfo.get_current_utc_ts()
-
-        self.logger.info(f"\n{'='*80}\n▶️ Starting processing for table: {table}\n{'='*80}")
+        domain = source_conf.get('domain')
+        self.logger.info(f"
+{'='*80}
+▶️ Starting processing for table: {table}
+{'='*80}")
 
         if self.params.load_type == "full_load":
             self.logger.info(f"Full load for table: {table}")
@@ -118,7 +121,8 @@ class DataLoader:
                 source_conf['database'],
                 query,
                 username,
-                password
+                password,
+                domain=domain
             )
         except Exception as e:
             self.logger.error(f"❌ Failed to read from source for table {table}: {e}")
@@ -127,40 +131,40 @@ class DataLoader:
         volume_path = self.watermark.latest_volume_path(dest_conf['volume_path'], table, initial_start_time)
         df = df.withColumn("load_datetimestamp", lit(initial_start_time))
         record_processed = df.count()
-        if record_processed > 0:
-            self.logger.info(f"✅ {record_processed} records fetched for table: {table}")
-            df.show(5, truncate=False)
-        else:
+
+        if record_processed == 0:
             self.logger.warning(f"⚠️ No records fetched from source for table: {table}")
+            return
 
-        if record_processed > 0:
-            self.write_raw_data(df, volume_path, dest_conf['file_format'], dest_conf['write_mode'])
+        self.logger.info(f"✅ {record_processed} records fetched for table: {table}")
+        df.show(5, truncate=False)
+        self.write_raw_data(df, volume_path, dest_conf['file_format'], dest_conf['write_mode'])
 
-            # Merge into discovery table
-            target_table = f"{dest_conf['catalog']}.{dest_conf['discovery_schema']}.{table}"
-            df_sanitized = Transform.sanitize_cols(df)
-            primary_key = self.env_config.get("primary_key_details", {}).get(table)
+        # Discovery layer write
+        df_sanitized = Transform.sanitize_cols(df)
+        target_table = f"{dest_conf['catalog']}.{dest_conf['discovery_schema']}.{table}"
 
-            if primary_key:
-                self.logger.info(f"Merging into {target_table} on primary key: {primary_key}")
-                self.delta_merge(target_table, df_sanitized, primary_key)
-
-                # Update watermark only for delta load after successful merge
-                if self.params.load_type != "full_load":
-                    watermark_table = f"{dest_conf['catalog']}.{job_history_conf['schema']}.{dest_conf['watermark_table']}"
-                    self.watermark.update_watermark(watermark_table, table, initial_start_time)
-                    self.logger.info(f"Watermark updated for table: {table}")
-            else:
-                self.logger.warning(f"Primary key not defined for {table}, skipping merge.")
-
-            # Append load summary
-            self.load_report.append({
-                "table_name": table,
-                "load_mode": self.params.load_type.upper(),
-                "record_count": record_processed
-            })
+        if self.params.load_type == "full_load":
+            self.logger.info(f"📝 Performing overwrite to discovery table: {target_table}")
+            df_sanitized.write.mode("overwrite").format("delta").saveAsTable(target_table)
         else:
-            self.logger.info(f"No data found for table: {table}")
+            primary_key = self.env_config.get("primary_key_details", {}).get(table)
+            if not primary_key:
+                self.logger.warning(f"⚠️ Primary key not defined for {table}. Using all columns as merge key.")
+                primary_key = ",".join(df_sanitized.columns)
+            self.logger.info(f"🔀 Performing MERGE on discovery table {target_table} with key: {primary_key}")
+            self.delta_merge(target_table, df_sanitized, primary_key)
+
+            # Update watermark after successful merge
+            watermark_table = f"{dest_conf['catalog']}.{job_history_conf['schema']}.{dest_conf['watermark_table']}"
+            self.watermark.update_watermark(watermark_table, table, initial_start_time)
+            self.logger.info(f"✅ Watermark updated for table: {table}")
+
+        self.load_report.append({
+            "table_name": table,
+            "load_mode": self.params.load_type.upper(),
+            "record_count": record_processed
+        })
 
         end_time = JobInfo.get_current_utc_ts()
         job_info_dict = JobInfo.get_job_info(
