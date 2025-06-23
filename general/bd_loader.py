@@ -99,7 +99,7 @@ class DataLoader:
         inserted_count = total_count - matched_count
         updated_count = matched_count
 
-        update_set = {c: f"source.`{c}`" for c in df_cols if c != "load_datetimestamp"}
+        update_set = {c: f"source.`{c}`" for c in df_cols}
         insert_set = {c: f"source.`{c}`" for c in df_cols}
 
         delta_table.alias("target").merge(
@@ -185,7 +185,11 @@ class DataLoader:
         target_table = f"{dest_conf['catalog']}.{dest_conf['discovery_schema']}.{table}"
 
         if self.params.load_type == "full_load":
-            self.logger.info(f"📝 Performing overwrite to discovery table: {target_table}")
+            if not DeltaTable.isDeltaTable(self.spark, target_table):
+                self.logger.info(f"📦 Discovery table `{target_table}` does not exist. Creating with overwrite.")
+            else:
+                self.logger.info(f"📝 Overwriting existing discovery table: {target_table}")
+
             df_sanitized.write.mode("overwrite").format("delta").saveAsTable(target_table)
         else:
             primary_key = self.env_config.get("primary_key_details", {}).get(table)
