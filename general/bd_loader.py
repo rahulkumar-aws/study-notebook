@@ -202,28 +202,33 @@ class DataLoader:
 
         if self.params.load_type == "full_load":
             self.logger.info(f"📝 Performing overwrite to discovery table: {target_table}")
+            if not DeltaTable.isDeltaTable(self.spark, target_table):
+                self.logger.info(f"📦 Creating discovery table `{target_table}`.")
             df_sanitized.write.mode("overwrite").format("delta").saveAsTable(target_table)
-            watermark_table = f\"{dest_conf['catalog']}.{job_history_conf['schema']}.{dest_conf['watermark_table']}\"
-            self.logger.info(f\"🆙 Updating per-table watermark after full load using job time: {initial_start_time}\")
-            self.watermark.update_watermark(watermark_table, table, initial_start_time)
+        
+            # Update watermark after full load
+            self.logger.info(f"🆙 Updating per-table watermark after full load using job time: {initial_start_time}")
+            self.watermark.update_watermark(self.watermark_table, table, initial_start_time)
+        
         else:
+            # Delta Load
             primary_key = self.env_config.get("primary_key_details", {}).get(table)
             if not primary_key:
                 self.logger.warning(f"⚠️ Primary key not defined for {table}. Using all columns as merge key.")
                 primary_key = ",".join([c for c in df_sanitized.columns])
+        
             self.logger.info(f"🔀 Performing MERGE on discovery table {target_table} with key: {primary_key}")
+        
             if not DeltaTable.isDeltaTable(self.spark, target_table):
-    self.logger.info(f"📦 Creating discovery table `{target_table}` before delta merge.")
-    df_sanitized.write.mode("overwrite").format("delta").saveAsTable(target_table)
-            watermark_table = f\"{dest_conf['catalog']}.{job_history_conf['schema']}.{dest_conf['watermark_table']}\"
-            self.logger.info(f\"🆙 Updating per-table watermark after full load using job time: {initial_start_time}\")
-            self.watermark.update_watermark(watermark_table, table, initial_start_time)
-            
-    self.delta_merge(target_table, df_sanitized, primary_key)
-
-            # Update watermark after successful merge
+                self.logger.info(f"📦 Creating discovery table `{target_table}` before delta merge.")
+                df_sanitized.write.mode("overwrite").format("delta").saveAsTable(target_table)
+        
+            self.delta_merge(target_table, df_sanitized, primary_key)
+        
+            # Update watermark after merge
+            self.logger.info(f"🆙 Updating per-table watermark after delta merge using job time: {initial_start_time}")
             self.watermark.update_watermark(self.watermark_table, table, initial_start_time)
-            self.logger.info(f"✅ Watermark updated for table: {table}")
+
 
         self.load_report.append({
             "table_name": table,
