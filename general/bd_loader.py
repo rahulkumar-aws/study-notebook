@@ -7,7 +7,7 @@ import traceback
 bundle_src_path = sys.argv[2]
 sys.path.append(bundle_src_path)
 
-from naanalytics_bd.Constants import Constants
+from naanalytics_dataloader.Constants import Constants
 from naanalytics_bd.utils.config_reader import ConfigReader
 from naanalytics_bd.utils.watermark import Watermark
 from naanalytics_bd.utils.logger import Logging
@@ -19,7 +19,7 @@ from naanalytics_bd.utils.transform import Transform
 from delta.tables import DeltaTable
 
 
-class BdRawDataLoader:
+class DataLoader:
     def __init__(self):
         self.job_name = self.__class__.__name__
         self.spark = None
@@ -31,10 +31,20 @@ class BdRawDataLoader:
 
     def initialize(self):
         self.logger = Logging.logger(self.job_name)
+        self.logger.info("🛠 Initializing job configuration...")
+        self.logger = Logging.logger(self.job_name)
         self.spark = SparkSession.builder.appName(self.job_name).getOrCreate()
         self.watermark = Watermark(self.spark)
-        self.configs = ConfigReader().get_configs()["env_config"]
+        configs = ConfigReader().get_configs()
+        self.env_config = configs["env_config"]
+        self.data_config = configs["data_config"]
+        self.logger.info(f"📜 Full ENV configuration loaded: {self.env_config}")
         self.params = ConfigReader().get_param_options()
+        self.logger.info(f"📂 Loaded ENV configuration keys: {list(self.env_config.keys())}")
+        self.logger.info(f"📂 Loaded DATA configuration keys: {list(self.data_config.keys())}")
+        self.logger.info(f"📁 Source Config: {self.env_config.get('source', {})}")
+        self.logger.info(f"📁 Destination Config: {self.env_config.get('destination', {})}")
+        self.logger.info(f"🔑 Primary Keys Config: {self.env_config.get('primary_key_details', {})}")
 
     def delta_merge(self, target, source_df, primary_key):
         delta_table = DeltaTable.forName(self.spark, target)
@@ -111,7 +121,7 @@ class BdRawDataLoader:
             # Merge into discovery table
             target_table = f"{dest_conf['catalog']}.{dest_conf['discovery_schema']}.{table}"
             df_sanitized = Transform.sanitize_cols(df)
-            primary_key = self.configs.get("primary_key_details", {}).get(table)
+            primary_key = self.env_config.get("primary_key_details", {}).get(table)
 
             if primary_key:
                 self.logger.info(f"Merging into {target_table} on primary key: {primary_key}")
@@ -139,7 +149,7 @@ class BdRawDataLoader:
             spark_context=sc,
             start_time=start_time,
             end_time=end_time,
-            data_source_name=self.configs.get("application_name"),
+            data_source_name=self.env_config.get("application_name"),
             source_configs=source_conf,
             source_schema=source_conf['database'],
             source_table=table,
@@ -168,11 +178,14 @@ class BdRawDataLoader:
             region = self.spark.conf.get("spark.databricks.clusterUsageTags.dataPlaneRegion")
             self.logger.info(f"📍 Spark region: {region}")
             sc = self.spark.sparkContext
-            source_conf = self.configs['source']
-            dest_conf = self.configs['destination']
-            job_history_conf = self.configs['job_history_conf']
+            source_conf = self.env_config['source']
+            dest_conf = self.env_config['destination']
+            job_history_conf = self.env_config['job_history_conf']
 
-            table_list = self.configs.get("all_source_table_names", [])
+            table_list = self.data_config.get("source_table_names", [])
+            if not table_list:
+                self.logger.error("❌ No tables found in 'source_table_names'. Please check the config file.")
+                return
             self.logger.info(f"📋 Table list to process: {table_list}")
             initial_start_time = datetime.utcnow()
 
@@ -195,7 +208,7 @@ class BdRawDataLoader:
 
 
 def run():
-    BdRawDataLoader().run()
+    DataLoader().run()
 
 
 if __name__ == "__main__":
