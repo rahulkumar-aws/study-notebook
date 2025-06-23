@@ -8,14 +8,14 @@ bundle_src_path = sys.argv[2]
 sys.path.append(bundle_src_path)
 
 from naanalytics_dataloader.Constants import Constants
-from naanalytics_bd.utils.config_reader import ConfigReader
-from naanalytics_bd.utils.watermark import Watermark
-from naanalytics_bd.utils.logger import Logging
-from naanalytics_bd.utils.aws_utils import AWSUtils
-from naanalytics_bd.utils.job_history import JobInfo
-from naanalytics_bd.connectors.mssql_connector import MSSQLConnector
-from naanalytics_bd.connectors.databricks_connector import DatabricksConnector
-from naanalytics_bd.utils.transform import Transform
+from naanalytics_dataloader.utils.config_reader import ConfigReader
+from naanalytics_dataloader.utils.watermark import Watermark
+from naanalytics_dataloader.utils.logger import Logging
+from naanalytics_dataloader.utils.aws_utils import AWSUtils
+from naanalytics_dataloader.utils.job_history import JobInfo
+from naanalytics_dataloader.connectors.mssql_connector import MSSQLConnector
+from naanalytics_dataloader.connectors.databricks_connector import DatabricksConnector
+from naanalytics_dataloader.utils.transform import Transform
 from delta.tables import DeltaTable
 
 
