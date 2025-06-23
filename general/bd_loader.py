@@ -27,6 +27,7 @@ class BdRawDataLoader:
         self.watermark = None
         self.configs = None
         self.params = None
+        self.load_report = []
 
     def initialize(self):
         self.logger = Logging.logger(self.job_name)
@@ -59,7 +60,7 @@ class BdRawDataLoader:
         job_info_dict = {}
         start_time = JobInfo.get_current_utc_ts()
 
-        self.logger.info(f"Processing table: {table}")
+        self.logger.info(f"\n{'='*80}\n▶️ Starting processing for table: {table}\n{'='*80}")
 
         if self.params.load_type == "full_load":
             self.logger.info(f"Full load for table: {table}")
@@ -112,6 +113,13 @@ class BdRawDataLoader:
                     self.logger.info(f"Watermark updated for table: {table}")
             else:
                 self.logger.warning(f"Primary key not defined for {table}, skipping merge.")
+
+            # Append load summary
+            self.load_report.append({
+                "table_name": table,
+                "load_mode": self.params.load_type.upper(),
+                "record_count": record_processed
+            })
         else:
             self.logger.info(f"No data found for table: {table}")
 
@@ -138,6 +146,9 @@ class BdRawDataLoader:
         )
         JobInfo.load_job_info(self.spark, sc, job_history_conf, job_info_dict)
 
+    def run(self):
+        self.main()
+
     def main(self):
         try:
             self.initialize()
@@ -154,7 +165,14 @@ class BdRawDataLoader:
             for table in table_list:
                 self.process_table(table, source_conf, dest_conf, job_history_conf, region, initial_start_time)
 
-            self.logger.info(f"Raw and discovery data load completed for all tables.")
+            if self.load_report:
+                df_report = self.spark.createDataFrame(self.load_report)
+                self.logger.info("\n📊 Final Load Summary:")
+                df_report.show(truncate=False)
+            else:
+                self.logger.info("No tables were updated.")
+
+            self.logger.info(f"\n✅ Raw and discovery data load completed for all tables.")
 
         except Exception as e:
             self.logger.error(f"Exception: {str(e)}")
@@ -162,5 +180,9 @@ class BdRawDataLoader:
             raise
 
 
+def run():
+    BdRawDataLoader().run()
+
+
 if __name__ == "__main__":
-    BdRawDataLoader().main()
+    run()
