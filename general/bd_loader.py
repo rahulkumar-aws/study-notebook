@@ -99,7 +99,7 @@ class DataLoader:
         inserted_count = total_count - matched_count
         updated_count = matched_count
 
-        update_set = {c: f"source.`{c}`" for c in df_cols}
+        update_set = {c: f"source.`{c}`" for c in df_cols if c != "load_datetimestamp"}
         insert_set = {c: f"source.`{c}`" for c in df_cols}
 
         delta_table.alias("target").merge(
