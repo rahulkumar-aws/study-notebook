@@ -29,7 +29,11 @@ class DataLoader:
         self.watermark = None
         self.configs = None
         self.params = None
+        self.source_conf = None
+        self.dest_conf = None
+        self.job_history_conf = None
         self.load_report = []
+        self.watermark_table = None
 
     def check_connection(self):
         source = self.env_config['source']
@@ -62,9 +66,14 @@ class DataLoader:
         configs = ConfigReader().get_configs()
         self.env_config = configs["env_config"]
         self.data_config = configs["data_config"]
+        self.source_conf = self.env_config['source']
+        self.dest_conf = self.env_config['destination']
+        self.job_history_conf = self.env_config['job_history_conf']
         self.application_name = self.env_config.get("application_name")
         self.logger.info(f"📜 Full ENV configuration loaded: {self.env_config}")
         self.params = ConfigReader().get_param_options()
+        watermark_table_name = f"watermark_{self.application_name}"
+        self.watermark_table = f"{self.dest_conf['catalog']}.{self.job_history_conf['schema']}.{watermark_table_name}"
         self.logger.info(f"📂 Loaded ENV configuration keys: {list(self.env_config.keys())}")
         self.logger.info(f"📂 Loaded DATA configuration keys: {list(self.data_config.keys())}")
         self.logger.info(f"📁 Source Config: {self.env_config.get('source', {})}")
@@ -127,8 +136,6 @@ class DataLoader:
         job_info_dict = {}
         start_time = JobInfo.get_current_utc_ts()
         domain = source_conf.get('domain')
-        watermark_table_name = f"watermark_{self.application_name}"
-        watermark_table = f"{dest_conf['catalog']}.{job_history_conf['schema']}.{watermark_table_name}"
         join_condition = self.data_config.get("delta_join_condition", {}).get(table)
         if join_condition:
             self.logger.info(f"📌 Join condition defined for {table}: {join_condition}")
@@ -148,7 +155,7 @@ class DataLoader:
             else:
                 modification_column = self.data_config.get("timestamp_column_map", {}).get(table, "ModifiedTime")
                 self.logger.info(f"⏱ Using modification column '{modification_column}' for table {table}")
-                last_watermark = self.watermark.fetch_watermark(watermark_table, table,
+                last_watermark = self.watermark.fetch_watermark(self.watermark_table, table,
                                                                 Constants.LAST_FETCH_COLUMN_NAME)
                 if last_watermark is None:
                     self.logger.info(f"No previous watermark found. Performing full load for table: {table}")
@@ -196,6 +203,7 @@ class DataLoader:
         if self.params.load_type == "full_load":
             self.logger.info(f"📝 Performing overwrite to discovery table: {target_table}")
             df_sanitized.write.mode("overwrite").format("delta").saveAsTable(target_table)
+            self.watermark.update_watermark(self.watermark_table, table, initial_start_time)
         else:
             primary_key = self.env_config.get("primary_key_details", {}).get(table)
             if not primary_key:
@@ -205,7 +213,7 @@ class DataLoader:
             self.delta_merge(target_table, df_sanitized, primary_key)
 
             # Update watermark after successful merge
-            self.watermark.update_watermark(watermark_table, table, initial_start_time)
+            self.watermark.update_watermark(self.watermark_table, table, initial_start_time)
             self.logger.info(f"✅ Watermark updated for table: {table}")
 
         self.load_report.append({
@@ -241,22 +249,21 @@ class DataLoader:
         try:
             region = self.spark.conf.get("spark.databricks.clusterUsageTags.dataPlaneRegion")
             self.logger.info(f"📍 Spark region: {region}")
-            sc = self.spark.sparkContext
-            source_conf = self.env_config['source']
-            dest_conf = self.env_config['destination']
-            job_history_conf = self.env_config['job_history_conf']
-
             table_list = self.data_config["objects"].get("source_table_names", [])
             if not table_list:
                 self.logger.error("❌ No tables found in 'source_table_names'. Please check the config file.")
                 return
             self.logger.info(f"📋 Table list to process: {table_list}")
-            watermark_table = f"{dest_conf['catalog']}.{job_history_conf['schema']}.{dest_conf['watermark_table']}"
-            initial_start_time = self.watermark.fetch_watermark(watermark_table, '', Constants.CURRENT_FETCH_COLUMN_NAME)
+            initial_start_time = self.watermark.fetch_watermark(self.watermark_table, '', Constants.CURRENT_FETCH_COLUMN_NAME)
+            if initial_start_time is None:
+                self.logger.warning("⚠️ No global watermark found. Switching to full_load mode.")
+                self.params.load_type = "full_load"
+            else:
+                self.logger.info(f"🔁 Using global job watermark from watermark table: {initial_start_time}")
             self.logger.info(f"🔁 Using global job watermark from watermark table: {initial_start_time}")
 
             for table in table_list:
-                self.process_table(table, source_conf, dest_conf, job_history_conf, region, initial_start_time)
+                self.process_table(table, self.source_conf, self.dest_conf, self.job_history_conf, region, initial_start_time)
 
             if self.load_report:
                 df_report = self.spark.createDataFrame(self.load_report)
