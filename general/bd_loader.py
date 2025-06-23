@@ -4,24 +4,26 @@ from pyspark.sql.functions import lit
 import sys
 import traceback
 
+from naanalytics_dataloader.dependencies.connectors.databricks_connector import DatabricksConnector
+from naanalytics_dataloader.dependencies.connectors.mssql_connector import MSSQLConnector
+from naanalytics_dataloader.dependencies.core.constants import Constants
+from naanalytics_dataloader.dependencies.core.logger import Logging
+from naanalytics_dataloader.dependencies.processors.transform import Transform
+from naanalytics_dataloader.dependencies.utils.aws_utils import AWSUtils
+from naanalytics_dataloader.dependencies.utils.config_reader import ConfigReader
+from naanalytics_dataloader.dependencies.utils.job_history import JobInfo
+from naanalytics_dataloader.dependencies.utils.watermark import Watermark
+
 bundle_src_path = sys.argv[2]
 sys.path.append(bundle_src_path)
 
-from naanalytics_dataloader.Constants import Constants
-from naanalytics_dataloader.utils.config_reader import ConfigReader
-from naanalytics_dataloader.utils.watermark import Watermark
-from naanalytics_dataloader.utils.logger import Logging
-from naanalytics_dataloader.utils.aws_utils import AWSUtils
-from naanalytics_dataloader.utils.job_history import JobInfo
-from naanalytics_dataloader.connectors.mssql_connector import MSSQLConnector
-from naanalytics_dataloader.connectors.databricks_connector import DatabricksConnector
-from naanalytics_dataloader.utils.transform import Transform
 from delta.tables import DeltaTable
 
 
 class DataLoader:
     def __init__(self):
         self.job_name = self.__class__.__name__
+        self.application_name = None
         self.spark = None
         self.logger = None
         self.watermark = None
@@ -39,8 +41,12 @@ class DataLoader:
                 .option("url", jdbc_url)\
                 .option("user", username)\
                 .option("password", password)\
-                .option("query", "SELECT 1")\
-                .option("driver", "com.microsoft.sqlserver.jdbc.SQLServerDriver")\
+                .option("query", "SELECT TOP 1 * FROM INFORMATION_SCHEMA.TABLES")\
+                .option("driver", "com.microsoft.sqlserver.jdbc.SQLServerDriver") \
+                .option("authenticationScheme", "NTLM") \
+                .option("domain", "AONNET") \
+                .option("integratedSecurity", "true") \
+                .option("trustServerCertificate", "true") \
                 .load()
             test_df.show()
             self.logger.info("✅ JDBC connection test passed.")
@@ -56,6 +62,7 @@ class DataLoader:
         configs = ConfigReader().get_configs()
         self.env_config = configs["env_config"]
         self.data_config = configs["data_config"]
+        self.application_name = self.env_config.get("application_name")
         self.logger.info(f"📜 Full ENV configuration loaded: {self.env_config}")
         self.params = ConfigReader().get_param_options()
         self.logger.info(f"📂 Loaded ENV configuration keys: {list(self.env_config.keys())}")
@@ -79,7 +86,8 @@ class DataLoader:
         df_cols = [c.lower().replace(" ", "_") for c in source_df.columns]
         target_cols = set(c.lower().replace(" ", "_") for c in self.spark.table(target).columns)
         pk_list = [pk.strip().lower().replace(" ", "_") for pk in primary_key.split(',')
-                   if pk.strip().lower().replace(" ", "_") in df_cols and pk.strip().lower().replace(" ", "_") in target_cols]
+                   if pk.strip().lower().replace(" ", "_") in df_cols and pk.strip().lower().replace(" ",
+                                                                                                     "_") in target_cols]
 
         if not pk_list:
             self.logger.warning(f"⚠️ Merge keys not found in source DataFrame for `{target}`. Skipping merge.")
@@ -99,7 +107,7 @@ class DataLoader:
         inserted_count = total_count - matched_count
         updated_count = matched_count
 
-        update_set = {c: f"source.`{c}`" for c in df_cols}
+        update_set = {c: f"source.`{c}`" for c in df_cols if c != "load_datetimestamp"}
         insert_set = {c: f"source.`{c}`" for c in df_cols}
 
         delta_table.alias("target").merge(
@@ -119,28 +127,29 @@ class DataLoader:
         job_info_dict = {}
         start_time = JobInfo.get_current_utc_ts()
         domain = source_conf.get('domain')
-        
+        watermark_table_name = f"watermark_{self.application_name}"
+        watermark_table = f"{dest_conf['catalog']}.{job_history_conf['schema']}.{watermark_table_name}"
         join_condition = self.data_config.get("delta_join_condition", {}).get(table)
         if join_condition:
             self.logger.info(f"📌 Join condition defined for {table}: {join_condition}")
 
         if self.params.load_type == "full_load":
             self.logger.info(f"Full load for table: {table}")
-            modification_column = self.data_config.get("timestamp_column_map", {}).get(table, "modified")
+            modification_column = self.data_config.get("timestamp_column_map", {}).get(table, "ModifiedTime")
             self.logger.info(f"⏱ Using modification column '{modification_column}' for table {table}")
             query = f"(SELECT * FROM [dbo].[{table}]) AS {table}_alias"
             last_watermark_str = "NA"
         else:
-            join_query = self.data_config.get("delta_join_query_map", {}).get(table)
+            join_query = self.data_config.get("primary_key_details", {}).get(table)
             if join_query:
                 self.logger.info(f"🧩 Using delta join query for table `{table}`")
                 query = f"({join_query}) AS {table}_alias"
                 last_watermark_str = "NA"
             else:
-                watermark_table = f"{dest_conf['catalog']}.{job_history_conf['schema']}.{dest_conf['watermark_table']}"
-                modification_column = self.data_config.get("timestamp_column_map", {}).get(table, "modified")
+                modification_column = self.data_config.get("timestamp_column_map", {}).get(table, "ModifiedTime")
                 self.logger.info(f"⏱ Using modification column '{modification_column}' for table {table}")
-                last_watermark = self.watermark.fetch_watermark(watermark_table, table, Constants.LAST_FETCH_COLUMN_NAME)
+                last_watermark = self.watermark.fetch_watermark(watermark_table, table,
+                                                                Constants.LAST_FETCH_COLUMN_NAME)
                 if last_watermark is None:
                     self.logger.info(f"No previous watermark found. Performing full load for table: {table}")
                     query = f"(SELECT * FROM [dbo].[{table}]) AS {table}_alias"
@@ -185,11 +194,7 @@ class DataLoader:
         target_table = f"{dest_conf['catalog']}.{dest_conf['discovery_schema']}.{table}"
 
         if self.params.load_type == "full_load":
-            if not DeltaTable.isDeltaTable(self.spark, target_table):
-                self.logger.info(f"📦 Discovery table `{target_table}` does not exist. Creating with overwrite.")
-            else:
-                self.logger.info(f"📝 Overwriting existing discovery table: {target_table}")
-
+            self.logger.info(f"📝 Performing overwrite to discovery table: {target_table}")
             df_sanitized.write.mode("overwrite").format("delta").saveAsTable(target_table)
         else:
             primary_key = self.env_config.get("primary_key_details", {}).get(table)
@@ -197,13 +202,9 @@ class DataLoader:
                 self.logger.warning(f"⚠️ Primary key not defined for {table}. Using all columns as merge key.")
                 primary_key = ",".join([c for c in df_sanitized.columns])
             self.logger.info(f"🔀 Performing MERGE on discovery table {target_table} with key: {primary_key}")
-            if not DeltaTable.isDeltaTable(self.spark, target_table):
-                self.logger.info(f"📦 Discovery table `{target_table}` does not exist. Creating before merge.")
-                df_sanitized.write.mode("overwrite").format("delta").saveAsTable(target_table)
             self.delta_merge(target_table, df_sanitized, primary_key)
 
             # Update watermark after successful merge
-            watermark_table = f"{dest_conf['catalog']}.{job_history_conf['schema']}.{dest_conf['watermark_table']}"
             self.watermark.update_watermark(watermark_table, table, initial_start_time)
             self.logger.info(f"✅ Watermark updated for table: {table}")
 
@@ -245,7 +246,7 @@ class DataLoader:
             dest_conf = self.env_config['destination']
             job_history_conf = self.env_config['job_history_conf']
 
-            table_list = self.data_config.get("source_table_names", [])
+            table_list = self.data_config["objects"].get("source_table_names", [])
             if not table_list:
                 self.logger.error("❌ No tables found in 'source_table_names'. Please check the config file.")
                 return
@@ -271,17 +272,14 @@ class DataLoader:
             traceback.print_exc()
             raise
 
-
-
-
-
-
-    def run(self):
+    def start(self):
         self.initialize()
         self.check_connection()
         self.logger.info("🚀 DataLoader job started")
         self.main()
 
+def run():
+    DataLoader().start()
 
-if __name__ == '__main__':
-    DataLoader().run()
+# if __name__ == '__main__':
+#     run()
