@@ -65,17 +65,46 @@ class DataLoader:
         self.logger.info(f"🔑 Primary Keys Config: {self.env_config.get('primary_key_details', {})}")
 
     def delta_merge(self, target, source_df, primary_key):
-        delta_table = DeltaTable.forName(self.spark, target)
-        pk_list = primary_key.split(',')
-        merge_condition = ' AND '.join([f"target.{pk} = source.{pk}" for pk in pk_list])
+        try:
+            self.spark.catalog.refreshTable(target)
+        except Exception as e:
+            self.logger.warning(f"⚠️ Could not refresh Delta table `{target}` metadata: {e}")
 
-        self.logger.info(f"Executing MERGE on {target} with condition: {merge_condition}")
+        try:
+            delta_table = DeltaTable.forName(self.spark, target)
+        except Exception as e:
+            self.logger.error(f"❌ Delta table `{target}` not found or inaccessible: {e}")
+            return
+
+        df_cols = [c.lower().replace(" ", "_") for c in source_df.columns]
+        pk_list = [pk.strip().lower().replace(" ", "_") for pk in primary_key.split(',') if pk.strip() in df_cols]
+
+        if not pk_list:
+            self.logger.warning(f"⚠️ Merge keys not found in source DataFrame for `{target}`. Skipping merge.")
+            return
+
+        merge_condition = " AND ".join([f"target.`{pk}` = source.`{pk}`" for pk in pk_list])
+        self.logger.info(f"🔁 Merging into {target} using condition: {merge_condition}")
+
+        source_df.createOrReplaceTempView("source_temp")
+
+        matched_count = self.spark.sql(f"""
+            SELECT COUNT(*) AS cnt FROM {target} target
+            INNER JOIN source_temp source ON {merge_condition}
+        """).collect()[0]["cnt"]
+
+        total_count = source_df.count()
+        inserted_count = total_count - matched_count
+        updated_count = matched_count
+
+        update_set = {c: f"source.`{c}`" for c in df_cols}
+        insert_set = {c: f"source.`{c}`" for c in df_cols}
 
         delta_table.alias("target").merge(
             source_df.alias("source"), merge_condition
-        ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+        ).whenMatchedUpdate(set=update_set).whenNotMatchedInsert(values=insert_set).execute()
 
-        self.logger.info(f"MERGE completed on {target}")
+        self.logger.info(f"✅ MERGE complete for `{target}` → Inserted: {inserted_count}, Updated: {updated_count}")
 
     def write_raw_data(self, dataframe, volume_path, format, mode):
         self.logger.info(f"Writing raw data to volume at path: {volume_path}")
@@ -88,26 +117,35 @@ class DataLoader:
         job_info_dict = {}
         start_time = JobInfo.get_current_utc_ts()
         domain = source_conf.get('domain')
-        self.logger.info(f"
-{'='*80}
-▶️ Starting processing for table: {table}
-{'='*80}")
+        
+        join_condition = self.data_config.get("delta_join_condition", {}).get(table)
+        if join_condition:
+            self.logger.info(f"📌 Join condition defined for {table}: {join_condition}")
 
         if self.params.load_type == "full_load":
             self.logger.info(f"Full load for table: {table}")
+            modification_column = self.data_config.get("timestamp_column_map", {}).get(table, "modified")
+            self.logger.info(f"⏱ Using modification column '{modification_column}' for table {table}")
             query = f"(SELECT * FROM [dbo].[{table}]) AS {table}_alias"
             last_watermark_str = "NA"
         else:
-            watermark_table = f"{dest_conf['catalog']}.{job_history_conf['schema']}.{dest_conf['watermark_table']}"
-            last_watermark = self.watermark.fetch_watermark(watermark_table, table, Constants.LAST_FETCH_COLUMN_NAME)
-
-            if last_watermark is None:
-                self.logger.info(f"No previous watermark found. Performing full load for table: {table}")
-                query = f"(SELECT * FROM [dbo].[{table}]) AS {table}_alias"
+            join_query = self.data_config.get("delta_join_query_map", {}).get(table)
+            if join_query:
+                self.logger.info(f"🧩 Using delta join query for table `{table}`")
+                query = f"({join_query}) AS {table}_alias"
                 last_watermark_str = "NA"
             else:
-                last_watermark_str = last_watermark.strftime("%Y-%m-%d %H:%M:%S")
-                query = f"(SELECT * FROM [dbo].[{table}] WHERE modified > '{last_watermark}' AND modified <= '{initial_start_time}') AS {table}_alias"
+                watermark_table = f"{dest_conf['catalog']}.{job_history_conf['schema']}.{dest_conf['watermark_table']}"
+                modification_column = self.data_config.get("timestamp_column_map", {}).get(table, "modified")
+                self.logger.info(f"⏱ Using modification column '{modification_column}' for table {table}")
+                last_watermark = self.watermark.fetch_watermark(watermark_table, table, Constants.LAST_FETCH_COLUMN_NAME)
+                if last_watermark is None:
+                    self.logger.info(f"No previous watermark found. Performing full load for table: {table}")
+                    query = f"(SELECT * FROM [dbo].[{table}]) AS {table}_alias"
+                    last_watermark_str = "NA"
+                else:
+                    last_watermark_str = last_watermark.strftime("%Y-%m-%d %H:%M:%S")
+                    query = f"(SELECT * FROM [dbo].[{table}] WHERE {modification_column} > '{last_watermark}' AND {modification_column} <= '{initial_start_time}') AS {table}_alias"
 
         username, password = AWSUtils.get_aws_secret_details(source_conf['secret_name'], region)
         self.logger.info(f"🔐 MSSQL Username being used: {username}")
