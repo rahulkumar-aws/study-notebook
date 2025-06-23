@@ -40,9 +40,19 @@ class BdRawDataLoader:
         pk_list = primary_key.split(',')
         merge_condition = ' AND '.join([f"target.{pk} = source.{pk}" for pk in pk_list])
 
+        self.logger.info(f"Executing MERGE on {target} with condition: {merge_condition}")
+
         delta_table.alias("target").merge(
             source_df.alias("source"), merge_condition
         ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+
+        self.logger.info(f"MERGE completed on {target}")
+
+    def write_raw_data(self, dataframe, volume_path, format, mode):
+        self.logger.info(f"Writing raw data to volume at path: {volume_path}")
+        self.logger.info(f"Format: {format}, Mode: {mode}, Record count: {dataframe.count()}")
+        DatabricksConnector.volume_writer(dataframe, volume_path, format, mode)
+        self.logger.info("Raw data write completed.")
 
     def process_table(self, table, source_conf, dest_conf, job_history_conf, region, initial_start_time):
         sc = self.spark.sparkContext
@@ -79,8 +89,7 @@ class BdRawDataLoader:
         record_processed = df.count()
 
         if record_processed > 0:
-            DatabricksConnector.volume_writer(df, volume_path, dest_conf['file_format'], dest_conf['write_mode'])
-            self.logger.info(f"Loaded {record_processed} records into volume: {volume_path}")
+            self.write_raw_data(df, volume_path, dest_conf['file_format'], dest_conf['write_mode'])
 
             # Merge into discovery table
             target_table = f"{dest_conf['catalog']}.{dest_conf['discovery_schema']}.{table}"
