@@ -1,42 +1,75 @@
 import argparse
 import pathlib
 import sys
-from argparse import ArgumentParser
 from typing import Dict, Any
-
 import yaml
 
 
 class ConfigReader:
-
     def __init__(self):
-        self.parser = None
-        self.data_conf_file_path = None
-        self.env_conf_file_path = None
+        # Unified argument parser for all inputs
+        self.parser = argparse.ArgumentParser(description="Load config and options for ETL job.")
+        self.parser.add_argument(
+            "--env-config",
+            type=str,
+            required=False,
+            help="Path to environment config YAML file"
+        )
+        self.parser.add_argument(
+            "--data-config",
+            type=str,
+            required=False,
+            help="Path to data config YAML file"
+        )
+        self.parser.add_argument(
+            "--load-type",
+            type=str,
+            required=True,
+            help="Type of load: e.g. Delta or Full"
+        )
+        self.parser.add_argument(
+            "--workspace-base-path",
+            type=str,
+            required=True,
+            help="Base path for the workspace"
+        )
 
-    def _get_conf_file(self):
-        self.param = ArgumentParser()
-        self.param.add_argument("--env-config", required=False, type=str)
-        self.param.add_argument("--data-config", required=False, type=str)
-        namespace = self.param.parse_known_args(sys.argv[1:])[0]
-        return namespace.env_config, namespace.data_config
+        # Parse args once and reuse
+        self.args = self.parser.parse_args()
 
-    def _read_config(self, conf_file) -> Dict[str, Any]:
-        if conf_file is not None:
-            return yaml.safe_load(pathlib.Path(conf_file).read_text())
+        # Extract file paths
+        self.env_conf_file_path = self.args.env_config
+        self.data_conf_file_path = self.args.data_config
+
+    def _read_config(self, conf_file: str) -> Dict[str, Any]:
+        """Safely read a YAML config file"""
+        if conf_file:
+            config_path = pathlib.Path(conf_file)
+            if not config_path.exists():
+                raise FileNotFoundError(f"Config file not found: {conf_file}")
+            return yaml.safe_load(config_path.read_text())
         return {}
 
-    def get_configs(self):
-        configs = {}
-        self.env_conf_file_path, self.data_conf_file_path = self._get_conf_file()
-        configs["env_config"] = self._read_config(self.env_conf_file_path)
-        configs["data_config"] = self._read_config(self.data_conf_file_path)
-        return configs
+    def get_configs(self) -> Dict[str, Dict[str, Any]]:
+        """Return parsed environment and data configs"""
+        return {
+            "env_config": self._read_config(self.env_conf_file_path),
+            "data_config": self._read_config(self.data_conf_file_path)
+        }
 
-    def get_param_options(self):
-        self.parser = argparse.ArgumentParser()
-        self.parser.add_argument("--load-type", type=str, help='Type of load e.g. Delta/Full')
-        self.parser.add_argument("--workspace-base-path", type=str, help='Base path for the workspace')
-        opt = self.parser.parse_args()
-        print(f"*** {opt}")
-        return opt
+    def get_param_options(self) -> argparse.Namespace:
+        """Return parsed command-line arguments"""
+        print(f"*** Parsed Arguments: {self.args}")
+        return self.args
+
+
+# Optional usage block if used as a script
+if __name__ == "__main__":
+    reader = ConfigReader()
+    configs = reader.get_configs()
+    params = reader.get_param_options()
+
+    print("✅ Load type:", params.load_type)
+    print("✅ Workspace base path:", params.workspace_base_path)
+    print("✅ Env config:", configs["env_config"])
+    print("✅ Data config:", configs["data_config"])
