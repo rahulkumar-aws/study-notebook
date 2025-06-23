@@ -77,7 +77,9 @@ class DataLoader:
             return
 
         df_cols = [c.lower().replace(" ", "_") for c in source_df.columns]
-        pk_list = [pk.strip().lower().replace(" ", "_") for pk in primary_key.split(',') if pk.strip() in df_cols]
+        target_cols = set(c.lower().replace(" ", "_") for c in self.spark.table(target).columns)
+        pk_list = [pk.strip().lower().replace(" ", "_") for pk in primary_key.split(',')
+                   if pk.strip().lower().replace(" ", "_") in df_cols and pk.strip().lower().replace(" ", "_") in target_cols]
 
         if not pk_list:
             self.logger.warning(f"⚠️ Merge keys not found in source DataFrame for `{target}`. Skipping merge.")
@@ -189,7 +191,7 @@ class DataLoader:
             primary_key = self.env_config.get("primary_key_details", {}).get(table)
             if not primary_key:
                 self.logger.warning(f"⚠️ Primary key not defined for {table}. Using all columns as merge key.")
-                primary_key = ",".join(df_sanitized.columns)
+                primary_key = ",".join([c for c in df_sanitized.columns if c.lower() != "load_datetimestamp"])
             self.logger.info(f"🔀 Performing MERGE on discovery table {target_table} with key: {primary_key}")
             self.delta_merge(target_table, df_sanitized, primary_key)
 
