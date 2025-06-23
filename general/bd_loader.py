@@ -61,16 +61,21 @@ class BdRawDataLoader:
 
         self.logger.info(f"Processing table: {table}")
 
-        watermark_table = f"{dest_conf['catalog']}.{job_history_conf['schema']}.{dest_conf['watermark_table']}"
-        last_watermark = self.watermark.fetch_watermark(watermark_table, table, Constants.LAST_FETCH_COLUMN_NAME)
-
-        if self.params.load_type == "full_load" or last_watermark is None:
+        if self.params.load_type == "full_load":
             self.logger.info(f"Full load for table: {table}")
             query = f"(SELECT * FROM [dbo].[{table}]) AS {table}_alias"
             last_watermark_str = "NA"
         else:
-            last_watermark_str = last_watermark.strftime("%Y-%m-%d %H:%M:%S")
-            query = f"(SELECT * FROM [dbo].[{table}] WHERE modified > '{last_watermark}' AND modified <= '{initial_start_time}') AS {table}_alias"
+            watermark_table = f"{dest_conf['catalog']}.{job_history_conf['schema']}.{dest_conf['watermark_table']}"
+            last_watermark = self.watermark.fetch_watermark(watermark_table, table, Constants.LAST_FETCH_COLUMN_NAME)
+
+            if last_watermark is None:
+                self.logger.info(f"No previous watermark found. Performing full load for table: {table}")
+                query = f"(SELECT * FROM [dbo].[{table}]) AS {table}_alias"
+                last_watermark_str = "NA"
+            else:
+                last_watermark_str = last_watermark.strftime("%Y-%m-%d %H:%M:%S")
+                query = f"(SELECT * FROM [dbo].[{table}] WHERE modified > '{last_watermark}' AND modified <= '{initial_start_time}') AS {table}_alias"
 
         username, password = AWSUtils.get_aws_secret_details(source_conf['secret_name'], region)
 
@@ -99,6 +104,12 @@ class BdRawDataLoader:
             if primary_key:
                 self.logger.info(f"Merging into {target_table} on primary key: {primary_key}")
                 self.delta_merge(target_table, df_sanitized, primary_key)
+
+                # Update watermark only for delta load after successful merge
+                if self.params.load_type != "full_load":
+                    watermark_table = f"{dest_conf['catalog']}.{job_history_conf['schema']}.{dest_conf['watermark_table']}"
+                    self.watermark.update_watermark(watermark_table, table, initial_start_time)
+                    self.logger.info(f"Watermark updated for table: {table}")
             else:
                 self.logger.warning(f"Primary key not defined for {table}, skipping merge.")
         else:
@@ -138,8 +149,7 @@ class BdRawDataLoader:
             job_history_conf = self.configs['job_history_conf']
 
             table_list = self.configs.get("all_source_table_names", [])
-            watermark_table = f"{dest_conf['catalog']}.{job_history_conf['schema']}.{dest_conf['watermark_table']}"
-            initial_start_time = self.watermark.fetch_watermark(watermark_table, '', Constants.CURRENT_FETCH_COLUMN_NAME)
+            initial_start_time = datetime.utcnow()
 
             for table in table_list:
                 self.process_table(table, source_conf, dest_conf, job_history_conf, region, initial_start_time)
