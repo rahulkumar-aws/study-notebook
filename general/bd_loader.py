@@ -79,20 +79,31 @@ class BdRawDataLoader:
                 query = f"(SELECT * FROM [dbo].[{table}] WHERE modified > '{last_watermark}' AND modified <= '{initial_start_time}') AS {table}_alias"
 
         username, password = AWSUtils.get_aws_secret_details(source_conf['secret_name'], region)
+        self.logger.info(f"🔐 MSSQL Username being used: {username}")
+        self.logger.info(f"🧾 SQL Query: {query}")
 
-        df = MSSQLConnector.reader(
-            self.spark,
-            source_conf['host'],
-            source_conf['port'],
-            source_conf['database'],
-            query,
-            username,
-            password
-        )
+        try:
+            df = MSSQLConnector.reader(
+                self.spark,
+                source_conf['host'],
+                source_conf['port'],
+                source_conf['database'],
+                query,
+                username,
+                password
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Failed to read from source for table {table}: {e}")
+            return
 
         volume_path = self.watermark.latest_volume_path(dest_conf['volume_path'], table, initial_start_time)
         df = df.withColumn("load_datetimestamp", lit(initial_start_time))
         record_processed = df.count()
+        if record_processed > 0:
+            self.logger.info(f"✅ {record_processed} records fetched for table: {table}")
+            df.show(5, truncate=False)
+        else:
+            self.logger.warning(f"⚠️ No records fetched from source for table: {table}")
 
         if record_processed > 0:
             self.write_raw_data(df, volume_path, dest_conf['file_format'], dest_conf['write_mode'])
@@ -150,16 +161,19 @@ class BdRawDataLoader:
         self.main()
 
     def main(self):
+        self.logger.info("🚀 BdRawDataLoader job started")
         try:
             self.initialize()
 
             region = self.spark.conf.get("spark.databricks.clusterUsageTags.dataPlaneRegion")
+            self.logger.info(f"📍 Spark region: {region}")
             sc = self.spark.sparkContext
             source_conf = self.configs['source']
             dest_conf = self.configs['destination']
             job_history_conf = self.configs['job_history_conf']
 
             table_list = self.configs.get("all_source_table_names", [])
+            self.logger.info(f"📋 Table list to process: {table_list}")
             initial_start_time = datetime.utcnow()
 
             for table in table_list:
