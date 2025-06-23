@@ -195,8 +195,11 @@ class DataLoader:
             primary_key = self.env_config.get("primary_key_details", {}).get(table)
             if not primary_key:
                 self.logger.warning(f"⚠️ Primary key not defined for {table}. Using all columns as merge key.")
-                primary_key = ",".join([c for c in df_sanitized.columns if c.lower() != "load_datetimestamp"])
+                primary_key = ",".join([c for c in df_sanitized.columns])
             self.logger.info(f"🔀 Performing MERGE on discovery table {target_table} with key: {primary_key}")
+            if not DeltaTable.isDeltaTable(self.spark, target_table):
+                self.logger.info(f"📦 Discovery table `{target_table}` does not exist. Creating before merge.")
+                df_sanitized.write.mode("overwrite").format("delta").saveAsTable(target_table)
             self.delta_merge(target_table, df_sanitized, primary_key)
 
             # Update watermark after successful merge
@@ -247,7 +250,9 @@ class DataLoader:
                 self.logger.error("❌ No tables found in 'source_table_names'. Please check the config file.")
                 return
             self.logger.info(f"📋 Table list to process: {table_list}")
-            initial_start_time = datetime.utcnow()
+            watermark_table = f"{dest_conf['catalog']}.{job_history_conf['schema']}.{dest_conf['watermark_table']}"
+            initial_start_time = self.watermark.fetch_watermark(watermark_table, '', Constants.CURRENT_FETCH_COLUMN_NAME)
+            self.logger.info(f"🔁 Using global job watermark from watermark table: {initial_start_time}")
 
             for table in table_list:
                 self.process_table(table, source_conf, dest_conf, job_history_conf, region, initial_start_time)
