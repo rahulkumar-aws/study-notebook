@@ -5,12 +5,17 @@ def process_table(self, table, source_conf, dest_conf, job_history_conf, region,
     domain = source_conf.get('domain')
 
     load_type = self.params.load_type
+    self.logger.info(f"🚀 Starting processing for table: {table} with load_type: {load_type}")
     modification_column = self.data_config.get("timestamp_column_map", {}).get(table, "ModifiedTime")
+    self.logger.info(f"🕒 Using modification column: {modification_column}")
+
+    last_watermark = None
+    last_watermark_str = "NA"
 
     # Determine SQL query based on load type
     if load_type == "full_load":
         query = f"(SELECT * FROM [dbo].[{table}]) AS {table}_alias"
-        last_watermark_str = "NA"
+        self.logger.info(f"📥 Full load query prepared for table: {table}")
 
     elif load_type == "delta":
         join_condition = self.data_config.get("delta_join_condition", {}).get(table)
@@ -19,24 +24,27 @@ def process_table(self, table, source_conf, dest_conf, job_history_conf, region,
 
         last_watermark = self.watermark.fetch_watermark(self.watermark_table, table, Constants.LAST_FETCH_COLUMN_NAME)
         if last_watermark is None:
-            self.logger.info(f"No previous watermark found. Performing full load for table: {table}")
+            self.logger.info(f"🕳 No previous watermark found. Performing full load for table: {table}")
             query = f"(SELECT * FROM [dbo].[{table}]) AS {table}_alias"
-            last_watermark_str = "NA"
         else:
             last_watermark_str = last_watermark.strftime("%Y-%m-%d %H:%M:%S")
+            self.logger.info(f"💧 Last watermark for delta load: {last_watermark_str}")
             query = f"(SELECT * FROM [dbo].[{table}] WHERE {modification_column} > '{last_watermark}' AND {modification_column} <= '{initial_start_time}') AS {table}_alias"
+            self.logger.info(f"📤 Delta query prepared for table: {table}")
 
     elif load_type == "append":
         last_watermark = self.watermark.fetch_watermark(self.watermark_table, table, Constants.LAST_FETCH_COLUMN_NAME)
         if last_watermark is None:
-            self.logger.info(f"No previous watermark found. Performing full load for table: {table}")
+            self.logger.info(f"🕳 No previous watermark found. Performing full load for table: {table}")
             query = f"(SELECT * FROM [dbo].[{table}]) AS {table}_alias"
-            last_watermark_str = "NA"
         else:
             last_watermark_str = last_watermark.strftime("%Y-%m-%d %H:%M:%S")
+            self.logger.info(f"💧 Last watermark for append load: {last_watermark_str}")
             query = f"(SELECT * FROM [dbo].[{table}] WHERE {modification_column} > '{last_watermark}' AND {modification_column} <= '{initial_start_time}') AS {table}_alias"
+            self.logger.info(f"📤 Append query prepared for table: {table}")
 
     else:
+        self.logger.error(f"❌ Unsupported load_type: {load_type}")
         raise ValueError(f"❌ Unsupported load_type: {load_type}")
 
     # Read from source
@@ -67,6 +75,7 @@ def process_table(self, table, source_conf, dest_conf, job_history_conf, region,
     # Discovery layer write
     df_sanitized = Transform.sanitize_cols(df)
     target_table = f"{dest_conf['catalog']}.{dest_conf['discovery_schema']}.{table}"
+    self.logger.info(f"💾 Writing data to discovery layer table: {target_table}")
 
     if load_type == "full_load":
         self.logger.info(f"📝 Performing overwrite to discovery table: {target_table}")
@@ -89,7 +98,7 @@ def process_table(self, table, source_conf, dest_conf, job_history_conf, region,
             self.delta_merge(target_table, df_sanitized, primary_key)
 
     self.watermark.update_watermark(self.watermark_table, table, initial_start_time)
-    self.logger.info(f"🆙 Updating per-table watermark {table} : {initial_start_time}")
+    self.logger.info(f"🆙 Watermark updated for table: {table} to {initial_start_time}")
 
     end_time = JobInfo.get_current_utc_ts()
     job_info_dict = JobInfo.get_job_info(
@@ -113,6 +122,7 @@ def process_table(self, table, source_conf, dest_conf, job_history_conf, region,
         new_watermark=initial_start_time.strftime("%Y-%m-%d %H:%M:%S")
     )
     JobInfo.load_job_info(self.spark, sc, job_history_conf, job_info_dict)
+    self.logger.info(f"📘 Job metadata saved for table: {table}")
 
     self.load_report.append({
         "table_name": table,
