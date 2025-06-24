@@ -123,7 +123,7 @@ class DataLoader:
             source_df.alias("source"), merge_condition
         ).whenMatchedUpdate(set=update_set).whenNotMatchedInsert(values=insert_set).execute()
 
-        self.logger.info(f"✅ MERGE complete for `{target}` → Inserted: {inserted_count}, Updated: {updated_count}")
+        self.logger.info(f"✅ [MERGE COMPLETE] Table `{target}`: {inserted_count} inserted, {updated_count} updated")
 
     def write_raw_data(self, dataframe, volume_path, format, mode):
         self.logger.info(f"Writing raw data to volume at path: {volume_path}")
@@ -141,7 +141,7 @@ class DataLoader:
             self.logger.info(f"📌 Join condition defined for {table}: {join_condition}")
 
         if self.params.load_type == "full_load":
-            self.logger.info(f"Full load for table: {table}")
+            self.logger.info(f"🚛 [FULL LOAD] Initiating full load for table: {table}")
             modification_column = self.data_config.get("timestamp_column_map", {}).get(table, "ModifiedTime")
             self.logger.info(f"⏱ Using modification column '{modification_column}' for table {table}")
             query = f"(SELECT * FROM [dbo].[{table}]) AS {table}_alias"
@@ -202,32 +202,27 @@ class DataLoader:
 
         if self.params.load_type == "full_load":
             self.logger.info(f"📝 Performing overwrite to discovery table: {target_table}")
-            
             if not DeltaTable.isDeltaTable(self.spark, target_table):
                 self.logger.info(f"📦 Creating discovery table `{target_table}`.")
-                
             df_sanitized.write.mode("overwrite").format("delta").saveAsTable(target_table)
-        
-            self.logger.info(f"🆙 Updating per-table watermark after full load using job time: {initial_start_time}")
             self.watermark.update_watermark(self.watermark_table, table, initial_start_time)
-        
+            self.logger.info(f"🆙 Updating per-table watermark {table} : {initial_start_time}")
         else:
-            primary_key = self.env_config.get("primary_key_details", {}).get(table)
-            if not primary_key:
-                self.logger.warning(f"⚠️ Primary key not defined for {table}. Using all columns as merge key.")
-                primary_key = ",".join([c for c in df_sanitized.columns])
-        
-            self.logger.info(f"🔀 Performing MERGE on discovery table {target_table} with key: {primary_key}")
-        
             if not DeltaTable.isDeltaTable(self.spark, target_table):
-                self.logger.info(f"📦 Creating discovery table `{target_table}` before delta merge.")
+                self.logger.info(f"📦 Creating discovery table `{target_table}`.")
                 df_sanitized.write.mode("overwrite").format("delta").saveAsTable(target_table)
-        
-            self.delta_merge(target_table, df_sanitized, primary_key)
-        
-            self.logger.info(f"🆙 Updating per-table watermark after delta merge using job time: {initial_start_time}")
-            self.watermark.update_watermark(self.watermark_table, table, initial_start_time)
+            else:
+                self.logger.info(f"📦Delta merge operation for table  `{target_table}`.")
+                primary_key = self.env_config.get("primary_key_details", {}).get(table)
+                if not primary_key:
+                    self.logger.warning(f"⚠️ Primary key not defined for {table}. Using all columns as merge key.")
+                    primary_key = ",".join([c for c in df_sanitized.columns])
+                self.logger.info(f"🔀 Performing MERGE on discovery table {target_table} with key: {primary_key}")
+                self.delta_merge(target_table, df_sanitized, primary_key)
 
+            # Update watermark
+            self.watermark.update_watermark(self.watermark_table, table, initial_start_time)
+            self.logger.info(f"🆙 Updating per-table watermark {table} : {initial_start_time}")
 
         self.load_report.append({
             "table_name": table,
@@ -267,7 +262,8 @@ class DataLoader:
                 self.logger.error("❌ No tables found in 'source_table_names'. Please check the config file.")
                 return
             self.logger.info(f"📋 Table list to process: {table_list}")
-            initial_start_time = self.watermark.fetch_watermark(self.watermark_table, '', Constants.CURRENT_FETCH_COLUMN_NAME)
+            initial_start_time = self.watermark.fetch_watermark(self.watermark_table, '',
+                                                                Constants.CURRENT_FETCH_COLUMN_NAME)
             if initial_start_time is None:
                 self.logger.warning("⚠️ No global watermark found. Switching to full_load mode.")
                 self.params.load_type = "full_load"
@@ -275,7 +271,8 @@ class DataLoader:
                 self.logger.info(f"🔁 Using global job watermark from watermark table: {initial_start_time}")
 
             for table in table_list:
-                self.process_table(table, self.source_conf, self.dest_conf, self.job_history_conf, region, initial_start_time)
+                self.process_table(table, self.source_conf, self.dest_conf, self.job_history_conf, region,
+                                   initial_start_time)
 
             if self.load_report:
                 df_report = self.spark.createDataFrame(self.load_report)
@@ -296,6 +293,7 @@ class DataLoader:
         self.check_connection()
         self.logger.info("🚀 DataLoader job started")
         self.main()
+
 
 def run():
     DataLoader().start()
