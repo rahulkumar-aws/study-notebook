@@ -11,13 +11,16 @@ elif bool(join_by_servicerequestid_map) and table in join_by_servicerequestid_ma
 
     self.logger.info(f"🔁 Join watermark range for Service_Request_Header: {srh_last_wm} -> {srh_curr_wm}")
 
+    # MUST wrap SELECT in parentheses and alias it to avoid JDBC syntax error
     keys_query = f"""
+        (
         SELECT src.{primary_key}
         FROM [{self.source_schema}].[{table}] AS src
         JOIN [{self.source_schema}].Service_Request_Header AS srh
             ON src.ServiceRequestId = srh.ServiceRequestId
         WHERE srh.ModifiedTime > '{srh_last_wm.strftime('%Y-%m-%d %H:%M:%S')}'
             AND srh.ModifiedTime <= '{srh_curr_wm.strftime('%Y-%m-%d %H:%M:%S')}'
+        ) AS {table}_keys
     """
 
     self.logger.info(f"🗝️ Keys query: {keys_query}")
