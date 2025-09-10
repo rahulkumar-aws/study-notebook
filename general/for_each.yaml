@@ -1,0 +1,72 @@
+resources:
+  jobs:
+    bridge_delta_load_workflow_job:
+      name: ${bundle.environment}_30m_delta_bridge_01
+      max_concurrent_runs: 1
+      schedule:
+        quartz_cron_expression: '0 0,30 0,4-23 * * ?'
+        timezone_id: America/Chicago
+        pause_status: UNPAUSED
+      tags:
+        env: ${bundle.environment}
+        freq: 30m
+        load: delta
+        source: bridge
+
+      permissions:
+        - user_name: *****@*****.com
+          level: CAN_MANAGE
+        - group_name: *****-*****-*****
+          level: CAN_MANAGE
+
+      email_notifications:
+        on_failure:
+          - *****@*****.com
+
+      tasks:
+        - task_key: bridge_watermark_manager
+          job_cluster_key: delta_job_init_cluster_bridge
+          python_wheel_task:
+            package_name: naanalytics_dataloader
+            entry_point: watermark_manager
+            parameters:
+              - "--workspace-base-path" "/Workspace/${workspace.file_path}/src"
+              - "--env-config" "/Workspace/${workspace.root_path}/files/resources/bridge/env_config/${bundle.environment}/env.yml"
+              - "--data-config" "/Workspace/${workspace.root_path}/files/resources/bridge/data_config/common/watermark.yml"
+              - "--load-type" "watermark"
+          libraries:
+            - pypi: { package: "pyyaml" }
+            - whl: ../../../dist/*.whl
+
+        - task_key: foreach_dataloader
+          depends_on:
+            - task_key: bridge_watermark_manager
+          for_each_task:
+            inputs: '[
+              "/Workspace/${workspace.root_path}/files/resources/bridge/data_config/common/delta_by_d_modified_timestamp_config_part1.yml",
+              "/Workspace/${workspace.root_path}/files/resources/bridge/data_config/common/delta_by_d_modified_timestamp_config_part2.yml",
+              "/Workspace/${workspace.root_path}/files/resources/bridge/data_config/common/delta_by_d_modified_timestamp_config_part3.yml",
+              "/Workspace/${workspace.root_path}/files/resources/bridge/data_config/common/delta_by_d_modified_timestamp_config_part4.yml"
+            ]'
+            concurrency: 4
+            task:
+              task_key: process_part
+              job_cluster_key: delta_load_job_cluster_bridge_1
+              python_wheel_task:
+                package_name: naanalytics_dataloader
+                entry_point: bridge_dataloader
+                parameters:
+                  - "--workspace-base-path" "/Workspace/${workspace.file_path}/src"
+                  - "--env-config" "/Workspace/${workspace.root_path}/files/resources/bridge/env_config/${bundle.environment}/env.yml"
+                  - "--data-config" "{{input}}"
+                  - "--load-type" "delta"
+                  - "--backfill" "1"
+              libraries:
+                - maven: { coordinates: com.oracle.database.jdbc:ojdbc8:19.3.0.0 }
+                - whl: ../../../dist/*.whl
+
+      job_clusters:
+        - job_cluster_key: delta_job_init_cluster_bridge
+          new_cluster: ${var.delta_job_init_cluster}
+        - job_cluster_key: delta_load_job_cluster_bridge_1
+          new_cluster: ${var.delta_load_job_cluster_1}
