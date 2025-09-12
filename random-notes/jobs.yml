@@ -1,0 +1,69 @@
+resources:
+  jobs:
+    bridge_delta_load_workflow_job:
+      name: ${bundle.environment}_30m_delta_bridge_01
+      max_concurrent_runs: 1
+
+      tasks:
+        # 0) Watermark (unchanged)
+        - task_key: b_watermark_manager
+          job_cluster_key: delta_job_init_cluster_bridge
+          python_wheel_task:
+            package_name: naanalytics_dataloader
+            entry_point: watermark_manager
+            parameters: [
+              "--workspace-base-path", "/Workspace/${workspace.file_path}/src",
+              "--env-config", "/Workspace/${workspace.root_path}/files/resources/bridge/env_config/${bundle.environment}/env.yml",
+              "--data-config", "/Workspace/${workspace.root_path}/files/resources/bridge/data_config/common/watermark.yml",
+              "--load-type", "watermark"
+            ]
+          libraries:
+            - pypi: { package: "pyyaml" }
+            - whl: ../../../dist/*.whl
+
+        # 1) Build tables list INSIDE THE WHEEL (new)
+        - task_key: build_tables_list
+          depends_on:
+            - task_key: b_watermark_manager
+          job_cluster_key: delta_job_init_cluster_bridge
+          python_wheel_task:
+            package_name: naanalytics_dataloader
+            entry_point: tables_list
+            parameters: [
+              "--yaml", "/Workspace/${workspace.root_path}/files/resources/bridge/tables.yml",
+              "--key", "tables"
+            ]
+          libraries:
+            - pypi: { package: "pyyaml" }
+            - whl: ../../../dist/*.whl
+
+        # 2) For-Each over the published list with concurrency = 10
+        - task_key: foreach_tables
+          depends_on:
+            - task_key: build_tables_list
+          for_each_task:
+            inputs: "{{tasks.build_tables_list.values.tables}}"   # <- comes from wheel task
+            concurrency: 10
+            task:
+              task_key: process_one_table
+              job_cluster_key: delta_load_job_cluster_bridge_1
+              python_wheel_task:
+                package_name: naanalytics_dataloader
+                entry_point: bridge_dataloader
+                parameters: [
+                  "--workspace-base-path", "/Workspace/${workspace.file_path}/src",
+                  "--env-config", "/Workspace/${workspace.root_path}/files/resources/bridge/env_config/${bundle.environment}/env.yml",
+                  "--data-config", "/Workspace/${workspace.root_path}/files/resources/bridge/data_config/common/delta_all_tables.yml",
+                  "--table", "{{input}}",
+                  "--load-type", "delta",
+                  "--backfill", "1"
+                ]
+              libraries:
+                - maven: { coordinates: com.oracle.database.jdbc:ojdbc8:19.3.0.0 }
+                - whl: ../../../dist/*.whl
+
+      job_clusters:
+        - job_cluster_key: delta_job_init_cluster_bridge
+          new_cluster: ${var.delta_job_init_cluster}
+        - job_cluster_key: delta_load_job_cluster_bridge_1
+          new_cluster: ${var.delta_load_job_cluster_1}
